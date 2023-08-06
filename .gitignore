@@ -1,0 +1,6 @@
+*.swp
+*~
+# ignore one char file names
+?
+# ignore paths that start with underscore
+_*
