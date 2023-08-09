@@ -13,6 +13,14 @@ def host_path(value):
     return str(pathlib.Path(value).resolve())
 
 
+def _working_image(img):
+    if ":" in img:
+        return img
+    if img:
+        return f"samba-builder:{img}"
+    return "samba-builder:dev"
+
+
 def _run(cmd, *args, **kwargs):
     print("--->", " ".join([shlex.quote(a) for a in cmd]))
     return subprocess.run(cmd, *args, **kwargs)
@@ -129,9 +137,10 @@ class BuildahBackend:
 
 
 def cmd_build_image(cli, is_centos=False):
-    phase1 = "samba-builder:dev"
-    with BuildahBackend(img=phase1) as builder:
-        builder.base_image("registry.fedoraproject.org/fedora:38")
+    build_dir = "/srv/dest"
+    pkg_sources_dir = "/usr/local/lib/sources"
+    with BuildahBackend(img=cli.working_image) as builder:
+        builder.base_image(cli.base_image)
         builder.add_build_task(
             RunTask(
                 [
@@ -139,8 +148,8 @@ def cmd_build_image(cli, is_centos=False):
                     "-p",
                     "-m",
                     "0777",
-                    "/srv/build",
-                    "/usr/local/lib/sources",
+                    build_dir,
+                    pkg_sources_dir,
                 ]
             )
         )
@@ -155,7 +164,7 @@ def cmd_build_image(cli, is_centos=False):
                     "samba.logrotate",
                     "smb.conf.vendor",
                 ],
-                "/usr/local/lib/sources",
+                pkg_sources_dir,
             )
         )
         pkgs = [
@@ -170,31 +179,34 @@ def cmd_build_image(cli, is_centos=False):
             pkgs.append("centos-release-gluster")
             pkgs.append("centos-release-ceph")
         builder.add_build_task(DNFInstallTask(pkgs, cli.dnf_cache))
-        builder.add_build_task(
-            DNFBuildDepTask(
-                ["/usr/local/lib/sources/samba-master.spec"], cli.dnf_cache
-            )
-        )
+        spec = pathlib.Path(pkg_sources_dir) / "samba-master.spec"
+        builder.add_build_task(DNFBuildDepTask([str(spec)], cli.dnf_cache))
 
 
 def cmd_build_srpm(cli):
-    phase1 = "samba-builder:dev"
+    src_dir = pathlib.Path("/build")
+    build_dir = pathlib.Path("/srv/dest")
+    pkg_sources_dir = pathlib.Path("/usr/local/lib/sources")
+    spec = pkg_sources_dir / "samba-master.spec"
+    working_spec = build_dir / "samba.spec"
+    rpm_version = "4.999"
+    working_tar = build_dir / f"samba-{rpm_version}.tar.gz"
     with BuildahBackend() as builder:
-        builder.base_image(phase1)
+        builder.base_image(cli.working_image)
         volumes = [
-            ContainerVolume(str(cli.source_dir), "/build"),
+            ContainerVolume(str(cli.source_dir), src_dir),
         ]
         if cli.artifacts_dir:
             volumes.append(
-                ContainerVolume(str(cli.artifacts_dir), "/srv/dest"),
+                ContainerVolume(str(cli.artifacts_dir), build_dir),
             )
         builder.add_build_task(
             RunTask(
                 [
                     "rsync",
                     "-r",
-                    "/usr/local/lib/sources/",
-                    "/srv/dest/",
+                    f"{pkg_sources_dir}/",
+                    f"{build_dir}/",
                 ],
                 volumes=volumes,
             )
@@ -203,14 +215,12 @@ def cmd_build_srpm(cli):
             RunTask(
                 [
                     "cp",
-                    "/usr/local/lib/sources/samba-master.spec",
-                    "/srv/dest/samba.spec",
+                    str(spec),
+                    str(working_spec),
                 ],
                 volumes=volumes,
             )
         )
-        rpm_version = "4.999"
-        dest = "/srv/dest/samba-4.999.tar.gz"
         builder.add_build_task(
             RunTask(
                 [
@@ -219,7 +229,7 @@ def cmd_build_srpm(cli):
                     "/build",
                     "archive",
                     f"--prefix=samba-{rpm_version}/",
-                    f"--output={dest}",
+                    f"--output={working_tar}",
                     "HEAD",
                 ],
                 volumes=volumes,
@@ -230,13 +240,13 @@ def cmd_build_srpm(cli):
                 [
                     "rpmbuild",
                     "--define",
-                    "_topdir /srv/dest/",
+                    f"_topdir {build_dir}",
                     "--define",
-                    "_sourcedir /srv/dest/",
+                    f"_sourcedir {build_dir}",
                     "--define",
-                    "_srcrpmdir /srv/dest/",
+                    f"_srcrpmdir {build_dir}",
                     "-bs",
-                    "/srv/dest/samba.spec",
+                    str(working_spec),
                 ],
                 volumes=volumes,
             )
@@ -244,24 +254,34 @@ def cmd_build_srpm(cli):
 
 
 def cmd_build_rpm(cli):
-    phase1 = "samba-builder:dev"
+    src_dir = pathlib.Path("/build")
+    build_dir = pathlib.Path("/srv/dest")
+    pkg_sources_dir = pathlib.Path("/usr/local/lib/sources")
+    spec = pkg_sources_dir / "samba-master.spec"
+    working_spec = build_dir / "samba.spec"
+    rpm_version = "4.999"
+    rpm_revision = "1"
+    rpm_dist = ".fc38"
+    working_srpm = (
+        build_dir / f"samba-{rpm_version}-{rpm_revision}{rpm_dist}.src.rpm"
+    )
     with BuildahBackend() as builder:
-        builder.base_image(phase1)
+        builder.base_image(cli.working_image)
         volumes = [
-            ContainerVolume(str(cli.source_dir), "/build"),
+            ContainerVolume(str(cli.source_dir), str(src_dir)),
         ]
         if cli.artifacts_dir:
             volumes.append(
-                ContainerVolume(str(cli.artifacts_dir), "/srv/dest"),
+                ContainerVolume(str(cli.artifacts_dir), str(build_dir)),
             )
         builder.add_build_task(
             RunTask(
                 [
                     "rpmbuild",
                     "--define",
-                    "_topdir /srv/dest/",
+                    f"_topdir {build_dir}",
                     "--rebuild",
-                    "/srv/dest/samba-4.999-1.fc38.src.rpm",
+                    str(working_srpm),
                 ],
                 volumes=volumes,
             )
@@ -276,22 +296,6 @@ Automate building samba packages using a container.
 It can be invoked using only command line options or using a YAML based
 configuration file. Use --help-yaml to see an example.
 """
-    )
-    parser.add_argument(
-        "--samba-source",
-        default="/srv/build/samba",
-        help="Path to the source checkout of samba",
-    )
-    parser.add_argument(
-        "--package-source",
-        default="/usr/local/lib/sources",
-        help="Path to packaging specific sources",
-    )
-    parser.add_argument(
-        "--workdir",
-        "-w",
-        default="/srv/build/work",
-        help="Path to working dir",
     )
     parser.add_argument(
         "--job",
@@ -316,16 +320,6 @@ configuration file. Use --help-yaml to see an example.
         help="Even if a repo already exists try to checkout the supplied git ref",
     )
     parser.add_argument(
-        "--bootstrap",
-        action="store_true",
-        help="Bootstrap environment & install critical dependency packages",
-    )
-    parser.add_argument(
-        "--skip-build",
-        action="store_true",
-        help="Do not build packages",
-    )
-    parser.add_argument(
         "--with-ceph",
         action="store_true",
         help="Enable building Ceph components",
@@ -347,13 +341,14 @@ configuration file. Use --help-yaml to see an example.
     )
     parser.add_argument(
         "--base-image",
+        default="registry.fedoraproject.org/fedora:38",
         help="Base image (example: quay.io/centos/centos:stream9)",
     )
     parser.add_argument(
         "--task",
         "-t",
         action="append",
-        choices=("image", "packages"),  # TODO: "configure", "make"
+        choices=("image", "srpm", "packages"),  # TODO: "configure", "make"
         help="What to build",
     )
     parser.add_argument(
@@ -361,15 +356,18 @@ configuration file. Use --help-yaml to see an example.
         help="Path to a directory for caching dnf state",
     )
     parser.add_argument(
-        "--shell",
-        action="store_true",
-        help="Interrupt package build and get a shell within the container instead.",
+        "--working-image",
+        "-w",
+        type=_working_image,
+        default="",
+        help="Name or tag of builder image",
     )
-    parser.add_argument(
-        "--example-yaml",
-        action="store_true",
-        help="Display example configuration yaml",
-    )
+    # TODO
+    # parser.add_argument(
+    #     "--example-yaml",
+    #     action="store_true",
+    #     help="Display example configuration yaml",
+    # )
     parser.add_argument("--config", "-c", help="Provide a configuration file")
     cli = parser.parse_args()
     return cli
@@ -377,9 +375,15 @@ configuration file. Use --help-yaml to see an example.
 
 def main():
     cli = parse_cli()
-    # cmd_build_image(cli)
-    cmd_build_srpm(cli)
-    cmd_build_rpm(cli)
+    tasks = cli.task or []
+    if not tasks:
+        tasks = ["image", "srpm", "packages"]
+    if "image" in tasks:
+        cmd_build_image(cli)
+    if "srpm" in tasks:
+        cmd_build_srpm(cli)
+    if "packages" in tasks:
+        cmd_build_rpm(cli)
 
 
 if __name__ == "__main__":
