@@ -13,8 +13,8 @@
 %{!?_make_verbose:%define _make_verbose V=1 VERBOSE=1}
 
 # Build with Active Directory Domain Controller support by default on Fedora and
-# RHEL >= 9
-%if 0%{?rhel} >= 9 || 0%{?fedora} >= 34
+# CentOS
+%if (0%{?rhel} >= 9 && 0%{?centos}) || 0%{?fedora} >= 38
 %bcond_without dc
 %else
 %bcond_with dc
@@ -50,11 +50,11 @@
 #endifarch
 %endif
 
-%ifarch aarch64 ppc64le s390x x86_64
-%bcond_without vfs_glusterfs
-%else
 %bcond_with vfs_glusterfs
-#endifarch
+%ifarch aarch64 ppc64le s390x x86_64
+%if (0%{?rhel} && 0%{?centos}) || 0%{?fedora}
+%bcond_without vfs_glusterfs
+%endif
 %endif
 
 # Build the ctdb-pcp-pmda package by default on Fedora
@@ -101,7 +101,7 @@
 %endif
 
 %if %{with dc} || %{with testsuite}
-%global required_mit_krb5 1.19
+%global required_mit_krb5 1.21
 %else
 %global required_mit_krb5 1.15.1
 %endif
@@ -1120,7 +1120,7 @@ Support for using an existing CEPH cluster as a mutex helper for CTDB
 
 %prep
 
-%setup -q -n %{name}-%{version}%{pre_release}
+%autosetup -n %{name}-%{version}%{pre_release} -p1
 
 # Ensure we rely on GnuTLS and do not build any other crypto code shipping with
 # the sources.
@@ -1319,9 +1319,9 @@ touch %{buildroot}%{_libdir}/krb5/plugins/libkrb5/winbind_krb5_locator.so
 
 %if %{without dc} && %{without testsuite}
 for i in \
-    %{_libdir}/samba/libdfs-server-ad-samba4.so \
-    %{_libdir}/samba/libdsdb-garbage-collect-tombstones-samba4.so \
-    %{_libdir}/samba/libscavenge-dns-records-samba4.so \
+    %{_libdir}/samba/libdfs-server-ad-private-samba.so \
+    %{_libdir}/samba/libdsdb-garbage-collect-tombstones-private-samba.so \
+    %{_libdir}/samba/libscavenge-dns-records-private-samba.so \
     %{_mandir}/man8/samba.8 \
     %{_mandir}/man8/samba_downgrade_db.8 \
     %{_mandir}/man8/samba-gpupdate.8 \
@@ -1382,16 +1382,6 @@ done
 # This makes the right links, as rpmlint requires that
 # the ldconfig-created links be recorded in the RPM.
 /sbin/ldconfig -N -n %{buildroot}%{_libdir}
-
-%if %{without dc} && %{without testsuite}
-for f in samba/libsamba-net-samba4.so \
-         samba/libsamba-python-samba4.so \
-         libsamba-policy.so* \
-         pkgconfig/samba-policy.pc ; do
-    rm -f %{buildroot}%{_libdir}/$f
-done
-#endif {without dc} && {without testsuite}
-%endif
 
 pushd pidl
 make DESTDIR=%{buildroot} install_vendor
@@ -1586,7 +1576,7 @@ fi
 %{_sbindir}/smbd
 %if %{with dc} || %{with testsuite}
 # This is only used by vfs_dfs_samba4
-%{_libdir}/samba/libdfs-server-ad-samba4.so
+%{_libdir}/samba/libdfs-server-ad-private-samba.so
 %endif
 %dir %{_libdir}/samba/auth
 %{_libdir}/samba/auth/unix.so
@@ -1599,6 +1589,9 @@ fi
 %{_libdir}/samba/vfs/btrfs.so
 %{_libdir}/samba/vfs/cap.so
 %{_libdir}/samba/vfs/catia.so
+%if %{with vfs_cephfs}
+%{_libdir}/samba/vfs/ceph_snapshots.so
+%endif
 %{_libdir}/samba/vfs/commit.so
 %{_libdir}/samba/vfs/crossrename.so
 %{_libdir}/samba/vfs/default_quota.so
@@ -1639,17 +1632,22 @@ fi
 %{_libdir}/samba/vfs/nfs4acl_xattr.so
 %endif
 
+%dir %{_libexecdir}/samba
+%{_libexecdir}/samba/samba-bgqd
+
 %dir %{_datadir}/samba
 %dir %{_datadir}/samba/mdssvc
 %{_datadir}/samba/mdssvc/elasticsearch_mappings.json
 
 %{_unitdir}/nmb.service
+%{_unitdir}/samba-bgqd.service
 %{_unitdir}/smb.service
 %dir %{_sysconfdir}/openldap/schema
 %config %{_sysconfdir}/openldap/schema/samba.schema
 %config(noreplace) %{_sysconfdir}/pam.d/samba
 %{_mandir}/man1/smbstatus.1*
 %{_mandir}/man8/eventlogadm.8*
+%{_mandir}/man8/samba-bgqd.8*
 %{_mandir}/man8/smbd.8*
 %{_mandir}/man8/nmbd.8*
 %{_mandir}/man8/vfs_acl_tdb.8*
@@ -1660,6 +1658,9 @@ fi
 %{_mandir}/man8/vfs_btrfs.8*
 %{_mandir}/man8/vfs_cap.8*
 %{_mandir}/man8/vfs_catia.8*
+%if %{with vfs_cephfs}
+%{_mandir}/man8/vfs_ceph_snapshots.8*
+%endif
 %{_mandir}/man8/vfs_commit.8*
 %{_mandir}/man8/vfs_crossrename.8*
 %{_mandir}/man8/vfs_default_quota.8*
@@ -1697,11 +1698,10 @@ fi
 %exclude %{_mandir}/man8/vfs_glusterfs.8*
 %endif
 
-%if 0
 %if %{without vfs_cephfs}
 %exclude %{_mandir}/man8/vfs_ceph.8*
+%exclude %{_mandir}/man8/vfs_ceph_new.8*
 %exclude %{_mandir}/man8/vfs_ceph_snapshots.8*
-%endif
 %endif
 
 %attr(775,root,printadmin) %dir /var/lib/samba/drivers
@@ -1731,9 +1731,9 @@ fi
 %{_bindir}/smbspool
 %{_bindir}/smbtar
 %{_bindir}/smbtree
+%{_bindir}/wspsearch
 %dir %{_libexecdir}/samba
 %ghost %{_libexecdir}/samba/cups_backend_smb
-%{_libexecdir}/samba/samba-bgqd
 %{_mandir}/man1/dbwrap_tool.1*
 %{_mandir}/man1/nmblookup.1*
 %{_mandir}/man1/oLschema2ldif.1*
@@ -1752,10 +1752,10 @@ fi
 %{_mandir}/man1/smbget.1*
 %{_mandir}/man1/smbtar.1*
 %{_mandir}/man1/smbtree.1*
+%{_mandir}/man1/wspsearch.1*
 %{_mandir}/man7/traffic_learner.7.*
 %{_mandir}/man7/traffic_replay.7.*
 %{_mandir}/man8/cifsdd.8.*
-%{_mandir}/man8/samba-bgqd.8*
 %{_mandir}/man8/samba-regedit.8*
 %{_mandir}/man8/smbspool.8*
 
@@ -1788,99 +1788,99 @@ fi
 %{_libdir}/libndr-krb5pac.so.*
 %{_libdir}/libndr-nbt.so.*
 %{_libdir}/libndr-standard.so.*
-%{_libdir}/libsamba-credentials.so.*
 %{_libdir}/libsamba-errors.so.*
 %{_libdir}/libsamba-passdb.so.*
 %{_libdir}/libsamba-util.so.*
-%{_libdir}/libsamba-hostconfig.so.*
-%{_libdir}/libsamdb.so.*
 %{_libdir}/libsmbconf.so.*
 %{_libdir}/libsmbldap.so.*
-%{_libdir}/libtevent-util.so.*
-%{_libdir}/libdcerpc.so.*
 
 %dir %{_libdir}/samba
-%{_libdir}/samba/libCHARSET3-samba4.so
-%{_libdir}/samba/libMESSAGING-SEND-samba4.so
-%{_libdir}/samba/libMESSAGING-samba4.so
-%{_libdir}/samba/libaddns-samba4.so
-%{_libdir}/samba/libads-samba4.so
-%{_libdir}/samba/libasn1util-samba4.so
-%{_libdir}/samba/libauth-samba4.so
-%{_libdir}/samba/libauthkrb5-samba4.so
-%{_libdir}/samba/libcli-cldap-samba4.so
-%{_libdir}/samba/libcli-ldap-common-samba4.so
-%{_libdir}/samba/libcli-ldap-samba4.so
-%{_libdir}/samba/libcli-nbt-samba4.so
-%{_libdir}/samba/libcli-smb-common-samba4.so
-%{_libdir}/samba/libcli-spoolss-samba4.so
-%{_libdir}/samba/libcliauth-samba4.so
-%{_libdir}/samba/libclidns-samba4.so
-%{_libdir}/samba/libcluster-samba4.so
-%{_libdir}/samba/libcmdline-contexts-samba4.so
-%{_libdir}/samba/libcommon-auth-samba4.so
-%{_libdir}/samba/libctdb-event-client-samba4.so
-%{_libdir}/samba/libdbwrap-samba4.so
-%{_libdir}/samba/libdcerpc-pkt-auth-samba4.so
-%{_libdir}/samba/libdcerpc-samba-samba4.so
-%{_libdir}/samba/libevents-samba4.so
-%{_libdir}/samba/libflag-mapping-samba4.so
-%{_libdir}/samba/libgenrand-samba4.so
-%{_libdir}/samba/libgensec-samba4.so
-%{_libdir}/samba/libgpext-samba4.so
-%{_libdir}/samba/libgpo-samba4.so
-%{_libdir}/samba/libgse-samba4.so
-%{_libdir}/samba/libhttp-samba4.so
-%{_libdir}/samba/libinterfaces-samba4.so
-%{_libdir}/samba/libiov-buf-samba4.so
-%{_libdir}/samba/libkrb5samba-samba4.so
-%{_libdir}/samba/libldbsamba-samba4.so
-%{_libdir}/samba/liblibcli-lsa3-samba4.so
-%{_libdir}/samba/liblibcli-netlogon3-samba4.so
-%{_libdir}/samba/liblibsmb-samba4.so
-%{_libdir}/samba/libmessages-dgm-samba4.so
-%{_libdir}/samba/libmessages-util-samba4.so
-%{_libdir}/samba/libmscat-samba4.so
-%{_libdir}/samba/libmsghdr-samba4.so
-%{_libdir}/samba/libmsrpc3-samba4.so
-%{_libdir}/samba/libndr-samba-samba4.so
-%{_libdir}/samba/libndr-samba4.so
-%{_libdir}/samba/libnet-keytab-samba4.so
-%{_libdir}/samba/libnetif-samba4.so
-%{_libdir}/samba/libnpa-tstream-samba4.so
-%{_libdir}/samba/libposix-eadb-samba4.so
-%{_libdir}/samba/libprinter-driver-samba4.so
-%{_libdir}/samba/libprinting-migrate-samba4.so
-%{_libdir}/samba/libreplace-samba4.so
-%{_libdir}/samba/libregistry-samba4.so
-%{_libdir}/samba/libsamba-cluster-support-samba4.so
-%{_libdir}/samba/libsamba-debug-samba4.so
-%{_libdir}/samba/libsamba-modules-samba4.so
-%{_libdir}/samba/libsamba-security-samba4.so
-%{_libdir}/samba/libsamba-sockets-samba4.so
-%{_libdir}/samba/libsamba3-util-samba4.so
-%{_libdir}/samba/libsamdb-common-samba4.so
-%{_libdir}/samba/libsecrets3-samba4.so
-%{_libdir}/samba/libserver-id-db-samba4.so
-%{_libdir}/samba/libserver-role-samba4.so
-%{_libdir}/samba/libsmb-transport-samba4.so
-%{_libdir}/samba/libsmbclient-raw-samba4.so
-%{_libdir}/samba/libsmbd-base-samba4.so
-%{_libdir}/samba/libsmbd-shim-samba4.so
-%{_libdir}/samba/libsmbldaphelper-samba4.so
-%{_libdir}/samba/libstable-sort-samba4.so
-%{_libdir}/samba/libsys-rw-samba4.so
-%{_libdir}/samba/libsocket-blocking-samba4.so
-%{_libdir}/samba/libtime-basic-samba4.so
-%{_libdir}/samba/libtorture-samba4.so
-%{_libdir}/samba/libtrusts-util-samba4.so
-%{_libdir}/samba/libutil-reg-samba4.so
-%{_libdir}/samba/libutil-setid-samba4.so
-%{_libdir}/samba/libutil-tdb-samba4.so
+%{_libdir}/samba/libCHARSET3-private-samba.so
+%{_libdir}/samba/libMESSAGING-SEND-private-samba.so
+%{_libdir}/samba/libMESSAGING-private-samba.so
+%{_libdir}/samba/libaddns-private-samba.so
+%{_libdir}/samba/libads-private-samba.so
+%{_libdir}/samba/libasn1util-private-samba.so
+%{_libdir}/samba/libauth-private-samba.so
+%{_libdir}/samba/libauthkrb5-private-samba.so
+%{_libdir}/samba/libcli-cldap-private-samba.so
+%{_libdir}/samba/libcli-ldap-common-private-samba.so
+%{_libdir}/samba/libcli-ldap-private-samba.so
+%{_libdir}/samba/libcli-nbt-private-samba.so
+%{_libdir}/samba/libcli-smb-common-private-samba.so
+%{_libdir}/samba/libcli-spoolss-private-samba.so
+%{_libdir}/samba/libcliauth-private-samba.so
+%{_libdir}/samba/libclidns-private-samba.so
+%{_libdir}/samba/libcluster-private-samba.so
+%{_libdir}/samba/libcmdline-contexts-private-samba.so
+%{_libdir}/samba/libcommon-auth-private-samba.so
+%{_libdir}/samba/libctdb-event-client-private-samba.so
+%{_libdir}/samba/libdbwrap-private-samba.so
+%{_libdir}/samba/libdcerpc-pkt-auth-private-samba.so
+%{_libdir}/samba/libdcerpc-private-samba.so
+%{_libdir}/samba/libdcerpc-samba-private-samba.so
+%{_libdir}/samba/libevents-private-samba.so
+%{_libdir}/samba/libflag-mapping-private-samba.so
+%{_libdir}/samba/libgenrand-private-samba.so
+%{_libdir}/samba/libgensec-private-samba.so
+%{_libdir}/samba/libgpext-private-samba.so
+%{_libdir}/samba/libgpo-private-samba.so
+%{_libdir}/samba/libgse-private-samba.so
+%{_libdir}/samba/libhttp-private-samba.so
+%{_libdir}/samba/libinterfaces-private-samba.so
+%{_libdir}/samba/libiov-buf-private-samba.so
+%{_libdir}/samba/libkrb5samba-private-samba.so
+%{_libdir}/samba/libldbsamba-private-samba.so
+%{_libdir}/samba/liblibcli-lsa3-private-samba.so
+%{_libdir}/samba/liblibcli-netlogon3-private-samba.so
+%{_libdir}/samba/liblibsmb-private-samba.so
+%{_libdir}/samba/libmessages-dgm-private-samba.so
+%{_libdir}/samba/libmessages-util-private-samba.so
+%{_libdir}/samba/libmscat-private-samba.so
+%{_libdir}/samba/libmsghdr-private-samba.so
+%{_libdir}/samba/libmsrpc3-private-samba.so
+%{_libdir}/samba/libndr-samba-private-samba.so
+%{_libdir}/samba/libndr-samba4-private-samba.so
+%{_libdir}/samba/libnet-keytab-private-samba.so
+%{_libdir}/samba/libnetif-private-samba.so
+%{_libdir}/samba/libnpa-tstream-private-samba.so
+%{_libdir}/samba/libposix-eadb-private-samba.so
+%{_libdir}/samba/libprinter-driver-private-samba.so
+%{_libdir}/samba/libprinting-migrate-private-samba.so
+%{_libdir}/samba/libreplace-private-samba.so
+%{_libdir}/samba/libregistry-private-samba.so
+%{_libdir}/samba/libsamba-cluster-support-private-samba.so
+%{_libdir}/samba/libsamba-credentials-private-samba.so
+%{_libdir}/samba/libsamba-debug-private-samba.so
+%{_libdir}/samba/libsamba-hostconfig-private-samba.so
+%{_libdir}/samba/libsamba-modules-private-samba.so
+%{_libdir}/samba/libsamba-net-private-samba.so
+%{_libdir}/samba/libsamba-policy-private-samba.so
+%{_libdir}/samba/libsamba-security-private-samba.so
+%{_libdir}/samba/libsamba-sockets-private-samba.so
+%{_libdir}/samba/libsamba3-util-private-samba.so
+%{_libdir}/samba/libsamdb-common-private-samba.so
+%{_libdir}/samba/libsamdb-private-samba.so
+%{_libdir}/samba/libsecrets3-private-samba.so
+%{_libdir}/samba/libserver-id-db-private-samba.so
+%{_libdir}/samba/libserver-role-private-samba.so
+%{_libdir}/samba/libsmb-transport-private-samba.so
+%{_libdir}/samba/libsmbclient-raw-private-samba.so
+%{_libdir}/samba/libsmbd-base-private-samba.so
+%{_libdir}/samba/libsmbd-shim-private-samba.so
+%{_libdir}/samba/libsmbldaphelper-private-samba.so
+%{_libdir}/samba/libstable-sort-private-samba.so
+%{_libdir}/samba/libsys-rw-private-samba.so
+%{_libdir}/samba/libsocket-blocking-private-samba.so
+%{_libdir}/samba/libtime-basic-private-samba.so
+%{_libdir}/samba/libtorture-private-samba.so
+%{_libdir}/samba/libutil-reg-private-samba.so
+%{_libdir}/samba/libutil-setid-private-samba.so
+%{_libdir}/samba/libutil-tdb-private-samba.so
 
 %if %{without libwbclient}
 %{_libdir}/samba/libwbclient.so.*
-%{_libdir}/samba/libwinbind-client-samba4.so
+%{_libdir}/samba/libwinbind-client-private-samba.so
 #endif {without libwbclient}
 %endif
 
@@ -1934,7 +1934,7 @@ fi
 
 ### COMMON-libs
 %files common-libs
-%{_libdir}/samba/libcmdline-samba4.so
+%{_libdir}/samba/libcmdline-private-samba.so
 %{_libdir}/libdcerpc-server-core.so
 %{_libdir}/libdcerpc-server-core.so.*
 
@@ -2046,18 +2046,18 @@ fi
 
 ### DC-LIBS
 %files dc-libs
-%{_libdir}/samba/libauth4-samba4.so
+%{_libdir}/samba/libauth4-private-samba.so
 
 %if %{with dc} || %{with testsuite}
-%{_libdir}/samba/libad-claims-samba4.so
-%{_libdir}/samba/libauthn-policy-util-samba4.so
-%{_libdir}/samba/libdb-glue-samba4.so
-%{_libdir}/samba/libpac-samba4.so
-%{_libdir}/samba/libprocess-model-samba4.so
-%{_libdir}/samba/libservice-samba4.so
+%{_libdir}/samba/libad-claims-private-samba.so
+%{_libdir}/samba/libauthn-policy-util-private-samba.so
+%{_libdir}/samba/libdb-glue-private-samba.so
+%{_libdir}/samba/libpac-private-samba.so
+%{_libdir}/samba/libprocess-model-private-samba.so
+%{_libdir}/samba/libservice-private-samba.so
 
 %if %{with testsuite}
-%{_libdir}/samba/libntvfs-samba4.so
+%{_libdir}/samba/libntvfs-private-samba.so
 %endif
 
 %dir %{_libdir}/samba/process_model
@@ -2082,10 +2082,10 @@ fi
 %{_libdir}/samba/service/smb.so
 %endif
 
-%{_libdir}/libdcerpc-server.so.*
-%{_libdir}/samba/libdsdb-module-samba4.so
-%{_libdir}/samba/libdsdb-garbage-collect-tombstones-samba4.so
-%{_libdir}/samba/libscavenge-dns-records-samba4.so
+%{_libdir}/samba/libdcerpc-server-private-samba.so
+%{_libdir}/samba/libdsdb-module-private-samba.so
+%{_libdir}/samba/libdsdb-garbage-collect-tombstones-private-samba.so
+%{_libdir}/samba/libscavenge-dns-records-private-samba.so
 
 ### DC-BIND
 %files dc-bind-dlz
@@ -2107,7 +2107,10 @@ fi
 %{_libexecdir}/samba/rpcd_fsrvp
 %{_libexecdir}/samba/rpcd_lsad
 %{_libexecdir}/samba/rpcd_mdssvc
+%{_libexecdir}/samba/rpcd_witness
+%if %{with testsuite}
 %{_libexecdir}/samba/rpcd_rpcecho
+%endif
 %{_libexecdir}/samba/rpcd_spoolss
 %{_libexecdir}/samba/rpcd_winreg
 %{_libexecdir}/samba/samba-dcerpcd
@@ -2116,8 +2119,8 @@ fi
 
 ### DCERPCD-LIBS
 %files dcerpcd-libs
-%{_libdir}/samba/libRPC-SERVER-LOOP-samba4.so
-%{_libdir}/samba/libRPC-WORKER-samba4.so
+%{_libdir}/samba/libRPC-SERVER-LOOP-private-samba.so
+%{_libdir}/samba/libRPC-WORKER-private-samba.so
 
 ### DEVEL
 %files devel
@@ -2129,8 +2132,6 @@ fi
 %{_includedir}/samba-4.0/core/ntstatus_gen.h
 %{_includedir}/samba-4.0/core/werror.h
 %{_includedir}/samba-4.0/core/werror_gen.h
-%{_includedir}/samba-4.0/credentials.h
-%{_includedir}/samba-4.0/dcerpc.h
 %{_includedir}/samba-4.0/dcesrv_core.h
 %{_includedir}/samba-4.0/domain_credentials.h
 %{_includedir}/samba-4.0/gen_ndr/atsvc.h
@@ -2151,7 +2152,6 @@ fi
 %{_includedir}/samba-4.0/gen_ndr/ndr_misc.h
 %{_includedir}/samba-4.0/gen_ndr/ndr_nbt.h
 %{_includedir}/samba-4.0/gen_ndr/ndr_samr.h
-%{_includedir}/samba-4.0/gen_ndr/ndr_samr_c.h
 %{_includedir}/samba-4.0/gen_ndr/ndr_svcctl.h
 %{_includedir}/samba-4.0/gen_ndr/ndr_svcctl_c.h
 %{_includedir}/samba-4.0/gen_ndr/netlogon.h
@@ -2170,14 +2170,13 @@ fi
 %{_includedir}/samba-4.0/ndr/ndr_krb5pac.h
 %{_includedir}/samba-4.0/ndr/ndr_svcctl.h
 %{_includedir}/samba-4.0/ndr/ndr_nbt.h
-%{_includedir}/samba-4.0/param.h
 %{_includedir}/samba-4.0/passdb.h
-%{_includedir}/samba-4.0/policy.h
 %{_includedir}/samba-4.0/rpc_common.h
 %{_includedir}/samba-4.0/samba/session.h
 %{_includedir}/samba-4.0/samba/version.h
 %{_includedir}/samba-4.0/share.h
 %{_includedir}/samba-4.0/smb2_lease_struct.h
+%{_includedir}/samba-4.0/smb3posix.h
 %{_includedir}/samba-4.0/smbconf.h
 %{_includedir}/samba-4.0/smb_ldap.h
 %{_includedir}/samba-4.0/smbldap.h
@@ -2196,44 +2195,27 @@ fi
 %{_includedir}/samba-4.0/util/idtree_random.h
 %{_includedir}/samba-4.0/util/signal.h
 %{_includedir}/samba-4.0/util/substitute.h
-%{_includedir}/samba-4.0/util/tevent_ntstatus.h
-%{_includedir}/samba-4.0/util/tevent_unix.h
-%{_includedir}/samba-4.0/util/tevent_werror.h
 %{_includedir}/samba-4.0/util/time.h
 %{_includedir}/samba-4.0/util/tfork.h
 %{_includedir}/samba-4.0/util_ldb.h
 %{_libdir}/libdcerpc-binding.so
-%{_libdir}/libdcerpc-samr.so
-%{_libdir}/libdcerpc.so
 %{_libdir}/libndr-krb5pac.so
 %{_libdir}/libndr-nbt.so
 %{_libdir}/libndr-standard.so
 %{_libdir}/libndr.so
-%{_libdir}/libsamba-credentials.so
 %{_libdir}/libsamba-errors.so
-%{_libdir}/libsamba-hostconfig.so
 %{_libdir}/libsamba-util.so
-%{_libdir}/libsamdb.so
 %{_libdir}/libsmbconf.so
-%{_libdir}/libtevent-util.so
-%{_libdir}/pkgconfig/dcerpc.pc
-%{_libdir}/pkgconfig/dcerpc_samr.pc
 %{_libdir}/pkgconfig/ndr.pc
 %{_libdir}/pkgconfig/ndr_krb5pac.pc
 %{_libdir}/pkgconfig/ndr_nbt.pc
 %{_libdir}/pkgconfig/ndr_standard.pc
-%{_libdir}/pkgconfig/samba-credentials.pc
-%{_libdir}/pkgconfig/samba-hostconfig.pc
 %{_libdir}/pkgconfig/samba-util.pc
-%{_libdir}/pkgconfig/samdb.pc
 %{_libdir}/libsamba-passdb.so
 %{_libdir}/libsmbldap.so
 
 %if %{with dc} || %{with testsuite}
-%{_includedir}/samba-4.0/dcerpc_server.h
-%{_libdir}/libdcerpc-server.so
 %{_libdir}/libdcerpc-server-core.so
-%{_libdir}/pkgconfig/dcerpc_server.pc
 %endif
 
 %if %{without libsmbclient}
@@ -2250,9 +2232,9 @@ fi
 %if %{with vfs_cephfs}
 %files vfs-cephfs
 %{_libdir}/samba/vfs/ceph.so
-%{_libdir}/samba/vfs/ceph_snapshots.so
+%{_libdir}/samba/vfs/ceph_new.so
 %{_mandir}/man8/vfs_ceph.8*
-%{_mandir}/man8/vfs_ceph_snapshots.8*
+%{_mandir}/man8/vfs_ceph_new.8*
 %endif
 
 ### VFS-IOURING
@@ -2285,19 +2267,19 @@ fi
 %files ldb-ldap-modules
 %{_libdir}/samba/ldb/ldbsamba_extensions.so
 %{_libdir}/samba/ldb/ildap.so
+%{_libdir}/samba/ldb/ldap.so
 
 ### LIBS
 %files libs
-%{_libdir}/libdcerpc-samr.so.*
-
-%{_libdir}/samba/libLIBWBCLIENT-OLD-samba4.so
-%{_libdir}/samba/libauth-unix-token-samba4.so
-%{_libdir}/samba/libdcerpc-samba4.so
-%{_libdir}/samba/libdnsserver-common-samba4.so
-%{_libdir}/samba/libshares-samba4.so
-%{_libdir}/samba/libsmbpasswdparser-samba4.so
-%{_libdir}/samba/libxattr-tdb-samba4.so
-%{_libdir}/samba/libREG-FULL-samba4.so
+%{_libdir}/samba/libLIBWBCLIENT-OLD-private-samba.so
+%{_libdir}/samba/libauth-unix-token-private-samba.so
+%{_libdir}/samba/libdcerpc-samba4-private-samba.so
+%{_libdir}/samba/libdcerpc-samr-private-samba.so
+%{_libdir}/samba/libdnsserver-common-private-samba.so
+%{_libdir}/samba/libshares-private-samba.so
+%{_libdir}/samba/libsmbpasswdparser-private-samba.so
+%{_libdir}/samba/libxattr-tdb-private-samba.so
+%{_libdir}/samba/libREG-FULL-private-samba.so
 
 ### LIBNETAPI
 %files -n libnetapi
@@ -2396,6 +2378,16 @@ fi
 %{python3_sitearch}/samba/dcerpc/*.py
 %{python3_sitearch}/samba/dcerpc/*.*.so
 
+%dir %{python3_sitearch}/samba/domain
+%{python3_sitearch}/samba/domain/*.py
+%dir %{python3_sitearch}/samba/domain/__pycache__
+%{python3_sitearch}/samba/domain/__pycache__/*.*.pyc
+
+%dir %{python3_sitearch}/samba/domain/models
+%{python3_sitearch}/samba/domain/models/*.py
+%dir %{python3_sitearch}/samba/domain/models/__pycache__
+%{python3_sitearch}/samba/domain/models/__pycache__/*.*.pyc
+
 %dir %{python3_sitearch}/samba/emulate
 %dir %{python3_sitearch}/samba/emulate/__pycache__
 %{python3_sitearch}/samba/emulate/__pycache__/*.*.pyc
@@ -2431,15 +2423,45 @@ fi
 %dir %{python3_sitearch}/samba/netcmd/domain/auth/__pycache__
 %{python3_sitearch}/samba/netcmd/domain/auth/__pycache__/*.*.pyc
 
+%dir %{python3_sitearch}/samba/netcmd/domain/auth/policy
+%{python3_sitearch}/samba/netcmd/domain/auth/policy/*.py
+%dir %{python3_sitearch}/samba/netcmd/domain/auth/policy/__pycache__
+%{python3_sitearch}/samba/netcmd/domain/auth/policy/__pycache__/*.*.pyc
+
+%dir %{python3_sitearch}/samba/netcmd/domain/auth/silo
+%{python3_sitearch}/samba/netcmd/domain/auth/silo/*.py
+%dir %{python3_sitearch}/samba/netcmd/domain/auth/silo/__pycache__
+%{python3_sitearch}/samba/netcmd/domain/auth/silo/__pycache__/*.*.pyc
+
 %dir %{python3_sitearch}/samba/netcmd/domain/claim
 %{python3_sitearch}/samba/netcmd/domain/claim/*.py
 %dir %{python3_sitearch}/samba/netcmd/domain/claim/__pycache__
 %{python3_sitearch}/samba/netcmd/domain/claim/__pycache__/*.*.pyc
 
-%dir %{python3_sitearch}/samba/netcmd/domain/models
-%{python3_sitearch}/samba/netcmd/domain/models/*.py
-%dir %{python3_sitearch}/samba/netcmd/domain/models/__pycache__
-%{python3_sitearch}/samba/netcmd/domain/models/__pycache__/*.*.pyc
+%dir %{python3_sitearch}/samba/netcmd/domain/kds
+%{python3_sitearch}/samba/netcmd/domain/kds/*.py
+%dir %{python3_sitearch}/samba/netcmd/domain/kds/__pycache__
+%{python3_sitearch}/samba/netcmd/domain/kds/__pycache__/*.*.pyc
+
+%dir %{python3_sitearch}/samba/netcmd/service_account
+%{python3_sitearch}/samba/netcmd/service_account/*.py
+%dir %{python3_sitearch}/samba/netcmd/service_account/__pycache__
+%{python3_sitearch}/samba/netcmd/service_account/__pycache__/*.*.pyc
+
+%dir %{python3_sitearch}/samba/netcmd/user
+%{python3_sitearch}/samba/netcmd/user/*.py
+%dir %{python3_sitearch}/samba/netcmd/user/__pycache__
+%{python3_sitearch}/samba/netcmd/user/__pycache__/*.*.pyc
+
+%dir %{python3_sitearch}/samba/netcmd/user/auth
+%{python3_sitearch}/samba/netcmd/user/auth/*.py
+%dir %{python3_sitearch}/samba/netcmd/user/auth/__pycache__
+%{python3_sitearch}/samba/netcmd/user/auth/__pycache__/*.*.pyc
+
+%dir %{python3_sitearch}/samba/netcmd/user/readpasswords
+%{python3_sitearch}/samba/netcmd/user/readpasswords/*.py
+%dir %{python3_sitearch}/samba/netcmd/user/readpasswords/__pycache__
+%{python3_sitearch}/samba/netcmd/user/readpasswords/__pycache__/*.*.pyc
 
 %dir %{python3_sitearch}/samba/samba3
 %{python3_sitearch}/samba/samba3/*.py
@@ -2452,9 +2474,8 @@ fi
 %dir %{python3_sitearch}/samba/subunit/__pycache__
 %{python3_sitearch}/samba/subunit/__pycache__/*.*.pyc
 
-%{_libdir}/libsamba-policy.cpython*.so.*
-%{_libdir}/samba/libsamba-net.*-samba4.so
-%{_libdir}/samba/libsamba-python.*-samba4.so
+%{_libdir}/samba/libsamba-net-join.*-private-samba.so
+%{_libdir}/samba/libsamba-python.*-private-samba.so
 
 %{_libdir}/samba/libpyldb-util.cpython*.so
 %{_libdir}/samba/libpytalloc-util.cpython*.so
@@ -2471,9 +2492,6 @@ fi
 %{python3_sitearch}/ldb.*.so
 
 %files -n python3-%{name}-devel
-%{_libdir}/libsamba-policy.*.so
-%{_libdir}/pkgconfig/samba-policy.*.pc
-
 %if %{with dc} || %{with testsuite}
 %files -n python3-%{name}-dc
 %{python3_sitearch}/samba/samdb.py
@@ -2561,6 +2579,11 @@ fi
 %dir %{python3_sitearch}/samba/tests/kcc/__pycache__
 %{python3_sitearch}/samba/tests/kcc/__pycache__/*.*.pyc
 
+%dir %{python3_sitearch}/samba/tests/ndr
+%{python3_sitearch}/samba/tests/ndr/*.py
+%dir %{python3_sitearch}/samba/tests/ndr/__pycache__
+%{python3_sitearch}/samba/tests/ndr/__pycache__/*.*.pyc
+
 %dir %{python3_sitearch}/samba/tests/samba_tool
 %{python3_sitearch}/samba/tests/samba_tool/*.py
 %dir %{python3_sitearch}/samba/tests/samba_tool/__pycache__
@@ -2594,17 +2617,17 @@ fi
 ### TEST-LIBS
 %files test-libs
 %if %{with dc} || %{with testsuite}
-%{_libdir}/samba/libdlz-bind9-for-torture-samba4.so
+%{_libdir}/samba/libdlz-bind9-for-torture-private-samba.so
 %else
-%{_libdir}/samba/libdsdb-module-samba4.so
+%{_libdir}/samba/libdsdb-module-private-samba.so
 %endif
 
 ### WINBIND
 %files winbind
 %{_libdir}/samba/idmap
 %{_libdir}/samba/nss_info
-%{_libdir}/samba/libnss-info-samba4.so
-%{_libdir}/samba/libidmap-samba4.so
+%{_libdir}/samba/libnss-info-private-samba.so
+%{_libdir}/samba/libidmap-private-samba.so
 %{_sbindir}/winbindd
 %attr(750,root,wbpriv) %dir /var/lib/samba/winbindd_privileged
 %{_unitdir}/winbind.service
@@ -2655,7 +2678,6 @@ fi
 %{_sysconfdir}/ctdb/functions
 %{_sysconfdir}/ctdb/nfs-linux-kernel-callout
 %{_sysconfdir}/ctdb/statd-callout
-%config %{_sysconfdir}/sudoers.d/ctdb
 
 # CTDB scripts, no config files
 # script with executable bit means activated
@@ -2695,6 +2717,8 @@ fi
 %{_libexecdir}/ctdb/ctdb_recovery_helper
 %{_libexecdir}/ctdb/ctdb_takeover_helper
 %{_libexecdir}/ctdb/smnotify
+%{_libexecdir}/ctdb/statd_callout
+%{_libexecdir}/ctdb/statd_callout_helper
 %{_libexecdir}/ctdb/tdb_mutex_check
 
 %dir %{_localstatedir}/lib/ctdb/
@@ -2725,7 +2749,6 @@ fi
 %{_datadir}/ctdb/events/legacy/00.ctdb.script
 %{_datadir}/ctdb/events/legacy/01.reclock.script
 %{_datadir}/ctdb/events/legacy/05.system.script
-%{_datadir}/ctdb/events/legacy/06.nfs.script
 %{_datadir}/ctdb/events/legacy/10.interface.script
 %{_datadir}/ctdb/events/legacy/11.natgw.script
 %{_datadir}/ctdb/events/legacy/11.routing.script
@@ -2734,6 +2757,8 @@ fi
 %{_datadir}/ctdb/events/legacy/31.clamd.script
 %{_datadir}/ctdb/events/legacy/40.vsftpd.script
 %{_datadir}/ctdb/events/legacy/41.httpd.script
+%{_datadir}/ctdb/events/legacy/46.update-keytabs.script
+%{_datadir}/ctdb/events/legacy/47.samba-dcerpcd.script
 %{_datadir}/ctdb/events/legacy/48.netbios.script
 %{_datadir}/ctdb/events/legacy/49.winbind.script
 %{_datadir}/ctdb/events/legacy/50.samba.script
@@ -3048,10 +3073,6 @@ fi
 %{_datadir}/ctdb/tests/UNIT/eventscripts/05.system.monitor.015.sh
 %{_datadir}/ctdb/tests/UNIT/eventscripts/05.system.monitor.017.sh
 %{_datadir}/ctdb/tests/UNIT/eventscripts/05.system.monitor.018.sh
-%{_datadir}/ctdb/tests/UNIT/eventscripts/06.nfs.releaseip.001.sh
-%{_datadir}/ctdb/tests/UNIT/eventscripts/06.nfs.releaseip.002.sh
-%{_datadir}/ctdb/tests/UNIT/eventscripts/06.nfs.takeip.001.sh
-%{_datadir}/ctdb/tests/UNIT/eventscripts/06.nfs.takeip.002.sh
 %{_datadir}/ctdb/tests/UNIT/eventscripts/10.interface.010.sh
 %{_datadir}/ctdb/tests/UNIT/eventscripts/10.interface.011.sh
 %{_datadir}/ctdb/tests/UNIT/eventscripts/10.interface.012.sh
@@ -3240,7 +3261,6 @@ fi
 %{_datadir}/ctdb/tests/UNIT/eventscripts/scripts/00.ctdb.sh
 %{_datadir}/ctdb/tests/UNIT/eventscripts/scripts/01.reclock.sh
 %{_datadir}/ctdb/tests/UNIT/eventscripts/scripts/05.system.sh
-%{_datadir}/ctdb/tests/UNIT/eventscripts/scripts/06.nfs.sh
 %{_datadir}/ctdb/tests/UNIT/eventscripts/scripts/10.interface.sh
 %{_datadir}/ctdb/tests/UNIT/eventscripts/scripts/11.natgw.sh
 %{_datadir}/ctdb/tests/UNIT/eventscripts/scripts/13.per_ip_routing.sh
@@ -3274,7 +3294,6 @@ fi
 %{_datadir}/ctdb/tests/UNIT/eventscripts/stubs/ethtool
 %{_datadir}/ctdb/tests/UNIT/eventscripts/stubs/exportfs
 %{_datadir}/ctdb/tests/UNIT/eventscripts/stubs/gstack
-%{_datadir}/ctdb/tests/UNIT/eventscripts/stubs/id
 %{_datadir}/ctdb/tests/UNIT/eventscripts/stubs/ip
 %{_datadir}/ctdb/tests/UNIT/eventscripts/stubs/ip6tables
 %{_datadir}/ctdb/tests/UNIT/eventscripts/stubs/iptables
