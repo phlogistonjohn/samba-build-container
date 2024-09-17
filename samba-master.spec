@@ -808,13 +808,6 @@ Provides: bundled(libreplace)
 The python3-%{name} package contains the Python 3 libraries needed by programs
 that use SMB, RPC and other Samba provided protocols in Python 3 programs.
 
-%package -n python3-%{name}-devel
-Summary: Samba python devel files
-Requires: python3-%{name} = %{samba_depver}
-
-%description -n python3-%{name}-devel
-The python3-%{name}-devel package contains the Python 3 devel files.
-
 %package -n python3-samba-test
 Summary: Samba Python libraries
 Requires: python3-%{name} = %{samba_depver}
@@ -2491,7 +2484,6 @@ fi
 %{python3_sitearch}/_ldb_text.py*
 %{python3_sitearch}/ldb.*.so
 
-%files -n python3-%{name}-devel
 %if %{with dc} || %{with testsuite}
 %files -n python3-%{name}-dc
 %{python3_sitearch}/samba/samdb.py
@@ -2672,6 +2664,7 @@ fi
 %config(noreplace) %{_sysconfdir}/ctdb/ctdb.conf
 %config(noreplace) %{_sysconfdir}/ctdb/notify.sh
 %config(noreplace) %{_sysconfdir}/ctdb/debug-hung-script.sh
+%config(noreplace) %{_sysconfdir}/ctdb/ctdb-backup-persistent-tdbs.sh
 %config(noreplace) %{_sysconfdir}/ctdb/ctdb-crash-cleanup.sh
 %config(noreplace) %{_sysconfdir}/ctdb/debug_locks.sh
 
@@ -2715,8 +2708,8 @@ fi
 %{_libexecdir}/ctdb/ctdb_natgw
 %{_libexecdir}/ctdb/ctdb-path
 %{_libexecdir}/ctdb/ctdb_recovery_helper
+%{_libexecdir}/ctdb/ctdb_smnotify_helper
 %{_libexecdir}/ctdb/ctdb_takeover_helper
-%{_libexecdir}/ctdb/smnotify
 %{_libexecdir}/ctdb/statd_callout
 %{_libexecdir}/ctdb/statd_callout_helper
 %{_libexecdir}/ctdb/tdb_mutex_check
@@ -2765,6 +2758,9 @@ fi
 %{_datadir}/ctdb/events/legacy/60.nfs.script
 %{_datadir}/ctdb/events/legacy/70.iscsi.script
 %{_datadir}/ctdb/events/legacy/91.lvs.script
+%{_datadir}/ctdb/events/legacy/95.database.script
+%dir %{_datadir}/ctdb/scripts
+%{_datadir}/ctdb/scripts/winbind_ctdb_updatekeytab.sh
 
 
 %if %{with testsuite}

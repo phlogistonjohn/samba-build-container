@@ -1,12 +1,18 @@
 #!/usr/bin/python3
 
 import argparse
+import enum
 import hashlib
 import json
+import logging
+import os
 import pathlib
 import shlex
 import subprocess
 import sys
+
+
+log = logging.getLogger()
 
 
 BASE_IMAGE = "registry.fedoraproject.org/fedora:40"
@@ -16,7 +22,7 @@ ANN_BC = "us.asynchrono.samba-build-container"
 ANN_SPEC_DIGEST = "us.asynchrono.samba-spec-digest"
 
 
-def host_path(value):
+def _host_path(value):
     return str(pathlib.Path(value).resolve())
 
 
@@ -28,10 +34,136 @@ def _working_image(img):
     return "samba-builder:dev"
 
 
+def _arg_str(value):
+    if _to_arg := getattr(value, "to_arg", None):
+        return _to_arg()
+    if isinstance(value, pathlib.Path):
+        return str(value)
+    return value
+
+
+def _cmdstr(cmd):
+    return " ".join(shlex.quote(c) for c in cmd)
+
+
 def _run(cmd, *args, **kwargs):
-    print("--->", " ".join([shlex.quote(a) for a in cmd]))
-    sys.stdout.flush()
+    cmd = [_arg_str(a) for a in cmd]
+    log.info("Executing command: %s", _cmdstr(cmd))
     return subprocess.run(cmd, *args, **kwargs)
+
+
+class Steps(enum.StrEnum):
+    DNF_CACHE = "dnfcache"
+    BUILD_CONTAINER = "build-container"
+    CONTAINER = "container"
+    CONFIGURE = "configure"
+    MAKE = "make"
+    SOURCE_RPM = "source-rpm"
+    RPM = "rpm"
+    OTHER = "other"
+
+
+class ImageSource(enum.StrEnum):
+    CACHE = "cache"
+    PULL = "pull"
+    BUILD = "build"
+
+
+class ImageSourceAction(argparse.Action):
+    def __init__(self, **kwargs):
+        _choices = [e.value for e in ImageSource]
+        kwargs['choices'] = _choices
+        super().__init__(**kwargs)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        lst = getattr(namespace, self.dest, None) or []
+        lst.append(ImageSource(values))
+        setattr(namespace, self.dest, lst)
+
+
+class ArgumentParser(argparse.ArgumentParser):
+    def parse_my_args(self, args=None, namespace=None):
+        args = sys.argv[1:] if args is None else list(args)
+        if "--" in args:
+            idx = args.index("--")
+            my_args, rest = args[:idx], args[idx + 1 :]
+        else:
+            my_args, rest = args, []
+        return self.parse_args(my_args, namespace=namespace), rest
+
+
+class Builder:
+    """Organize and manage the build steps."""
+
+    _steps = {}
+
+    def __init__(self):
+        self._did_steps = set()
+
+    def wants(self, step, ctx, *, force=False, top=False):
+        log.info("want to execute build step: %s", step)
+        if ctx.cli.no_prereqs and not top:
+            log.info("Running prerequisite steps disabled")
+            return
+        if step in self._did_steps:
+            log.info("step already done: %s", step)
+            return
+        self._steps[step](ctx)
+        self._did_steps.add(step)
+        log.info("step done: %s", step)
+
+    def available_steps(self):
+        return [str(k) for k in self._steps]
+
+    @classmethod
+    def set(self, step):
+        def wrap(f):
+            self._steps[step] = f
+            f._for_step = step
+            return f
+
+        return wrap
+
+
+class Context:
+    """Command context."""
+
+    def __init__(self, cli):
+        self.cli = cli
+        self._spec_file = pathlib.Path("samba-master.spec")
+        self._default_spec_file = True
+        if cli.rpm_spec_file:
+            self._spec_file = pathlib.Path(cli.rpm_spec_file)
+            self._default_spec_file = False
+        self._image_paths = ImagePaths()
+
+    @property
+    def spec_file(self):
+        return self._spec_file
+
+    @property
+    def is_default_spec_file(self):
+        return self._default_spec_file
+
+    @property
+    def ipaths(self):
+        return self._image_paths
+
+    def volumes(self):
+        volumes = []
+        if self.cli.source_dir:
+            volumes.append(
+                ContainerVolume(
+                    str(self.cli.source_dir), self.ipaths.src_dir
+                ),
+            )
+        if self.cli.artifacts_dir:
+            volumes.append(
+                ContainerVolume(
+                    str(self.cli.artifacts_dir), self.ipaths.build_dir
+                ),
+            )
+        return volumes
 
 
 class ContainerVolume:
@@ -43,6 +175,9 @@ class ContainerVolume:
     @property
     def dest_dir_path(self):
         return pathlib.Path(self.dest_dir)
+
+    def to_arg(self):
+        return f"--volume={self.host_dir}:{self.dest_dir}:{self.flags}"
 
 
 class RunTask:
@@ -96,13 +231,15 @@ class DNFBuildDepTask(_DNFTask):
 
 
 class BuildahBackend:
-    def __init__(self, buildah_path=None, img=None):
+    def __init__(self, *, buildah_path=None, img=None, base="", volumes=None):
         self._buildah = buildah_path or BUILDAH
-        self._base = ""
+        self._base = base
         self._tasks = []
         self._img = img
         self._annotations = {}
         self._volumes = []
+        if volumes:
+            self.add_volumes(volumes)
 
     @property
     def base_image(self):
@@ -118,6 +255,10 @@ class BuildahBackend:
 
     def append(self, task):
         self._tasks.append(task)
+
+    def direct(self, cmd, check=True, capture_output=True):
+        cmd = [self._buildah] + cmd
+        return _run(cmd, check=check, capture_output=capture_output)
 
     def immediate(self, task, check=True, capture_output=True):
         cid = self._new()
@@ -183,9 +324,7 @@ class BuildahBackend:
 
     def _task_to_cmd(self, task, cid):
         cmd = [self._buildah]
-        vols = self._with_volumes(task)
-        for vol in vols:
-            cmd.append(f"--volume={vol.host_dir}:{vol.dest_dir}:{vol.flags}")
+        cmd.extend(self._with_volumes(task))
         wdir = getattr(task, "workingdir", None)
         if wdir:
             cmd.append(f"--workingdir={wdir}")
@@ -227,20 +366,7 @@ class ImagePaths:
         self.src_dir = self._root / "build"
         self.build_dir = self._root / "srv/dest"
         self.pkg_sources_dir = self._root / "usr/local/lib/sources"
-        self.spec = self.pkg_sources_dir / "samba-master.spec"
-
-
-def _common_volumes(cli, ipaths):
-    volumes = []
-    if cli.source_dir:
-        volumes.append(
-            ContainerVolume(str(cli.source_dir), ipaths.src_dir),
-        )
-    if cli.artifacts_dir:
-        volumes.append(
-            ContainerVolume(str(cli.artifacts_dir), ipaths.build_dir),
-        )
-    return volumes
+        self.spec = self.pkg_sources_dir / "samba.spec"
 
 
 def sha256_digest(path, bsize=4096):
@@ -268,9 +394,13 @@ def _parse_os_release(txt):
     return out
 
 
-def cmd_build_image(cli):
+@Builder.set(Steps.BUILD_CONTAINER)
+def build_container(ctx):
+    #ctx.build.wants(Steps.DNF_CACHE, ctx)
     ipaths = ImagePaths()
-    spec_digest = sha256_digest("samba-master.spec")
+    spec_file = ctx.spec_file
+    cli = ctx.cli
+    spec_digest = sha256_digest(spec_file)
     with BuildahBackend(img=cli.working_image) as builder:
         builder.base_image = cli.base_image
         res = builder.immediate(
@@ -301,7 +431,6 @@ def cmd_build_image(cli):
                 [
                     "samba.pamd",
                     "README.downgrade",
-                    "samba-master.spec",
                     "smb.conf.example",
                     "pam_winbind.conf",
                     "samba.logrotate",
@@ -309,6 +438,9 @@ def cmd_build_image(cli):
                 ],
                 str(ipaths.pkg_sources_dir),
             )
+        )
+        builder.append(
+            CopyTask([spec_file], ipaths.spec)
         )
         pkgs = [
             "git",
@@ -323,64 +455,109 @@ def cmd_build_image(cli):
             extra_repos.append("epel")
             pkgs.append("centos-release-gluster")
             extra_repos.append("centos-gluster11")
-            pkgs.append("centos-release-ceph")
+            pkgs.append("centos-release-ceph-reef")
             extra_repos.append("centos-ceph-reef")
             extra_repos.append('crb')
         builder.append(DNFInstallTask(pkgs, cli.dnf_cache))
         builder.append(DNFBuildDepTask([str(ipaths.spec)], cli.dnf_cache, enable_repos=extra_repos))
 
 
-def cmd_build_srpm(cli):
-    spec_file = "samba-master.spec"
-    custom_spec = False
-    if cli.rpm_spec_file:
-        spec_file = cli.rpm_spec_file
-        custom_spec = True
-        print('Using custom spec file')
+@Builder.set(Steps.CONTAINER)
+def get_container(ctx):
+    """Acquire an image that we will build in."""
+    image_name = ctx.cli.working_image
+    inspect_cmd = ["inspect", image_name]
+    pull_cmd = ["pull", image_name]
+    builder = BuildahBackend()
+
+    allowed = ctx.cli.image_sources or ImageSource
+    if ImageSource.CACHE in allowed:
+        res = builder.direct(inspect_cmd)
+        if res.returncode == 0:
+            log.info("Container image %s present", image_name)
+            return
+        log.info("Container image %s not present", image_name)
+    if ImageSource.PULL in allowed:
+        res = builder.direct(pull_cmd)
+        if res.returncode == 0:
+            log.info("Container image %s pulled successfully", image_name)
+            return
+    log.info("Container image %s needed", image_name)
+    if ImageSource.BUILD in allowed:
+        ctx.build.wants(Steps.BUILD_CONTAINER, ctx)
+        return
+    raise ValueError("no available image sources")
+
+
+def _version_read(builder, path, *, package=False, volumes=None):
+    cmd = [
+        "rpm",
+        '-q',
+        '--queryformat',
+        '%{name}: %{version}\\n',
+        '--package' if package else '--specfile',
+        path,
+    ]
+    res = builder.immediate(RunTask(cmd, volumes=volumes))
+    contents = dict(
+        tuple(map(str.strip, l.split(':', 1)))
+        for l in res.stdout.decode('utf8').splitlines()
+    )
+    return contents["samba"]
+
+
+@Builder.set(Steps.SOURCE_RPM)
+def cmd_build_srpm(ctx):
+    ctx.build.wants(Steps.CONTAINER, ctx)
+    spec_file = ctx.spec_file
+    log.info("Using %s spec file", "default" if ctx.is_default_spec_file else "custom")
     spec_digest = sha256_digest(spec_file)
-    ipaths = ImagePaths()
-    rpm_version = "4.999"
-    working_tar = ipaths.build_dir / f"samba-{rpm_version}.tar.gz"
-    working_spec = ipaths.build_dir / "samba.spec"
-    volumes = _common_volumes(cli, ipaths)
-    with BuildahBackend() as builder:
-        print('hhhhh')
-        img_annotations = builder.get_annotations(cli.working_image)
-        if not custom_spec and ANN_BC in img_annotations and ANN_SPEC_DIGEST in img_annotations:
+    log.info("Spec file digest: %s", spec_digest)
+    volumes = ctx.volumes()
+    if ctx.is_default_spec_file:
+        ctr_spec_file = ctx.ipaths.spec
+    else:
+        ctr_spec_file = "/tmp/samba.spec"
+        volumes.append(ContainerVolume(spec_file.absolute(), ctr_spec_file))
+    with BuildahBackend(base=ctx.cli.working_image, volumes=volumes) as builder:
+        rpm_version = _version_read(builder, ctr_spec_file)
+        log.info("Samba RPM SPEC version: %s", rpm_version)
+        check_digest = (ctx.is_default_spec_file
+                        and ANN_BC in img_annotations
+                        and ANN_SPEC_DIGEST in img_annotations)
+        if check_digest:
+            log.info("Checking spec file digest matches")
             prefixed_digest = f"sha256:{spec_digest}"
             if img_annotations[ANN_SPEC_DIGEST] != prefixed_digest:
                 raise ValueError(
                     "spec digest mismatch: "
                     f"{prefixed_digest} != {img_annotations[ANN_SPEC_DIGEST]}"
                 )
-        builder.base_image = cli.working_image
-        builder.add_volumes(volumes)
+        build_dir = ctx.ipaths.build_dir
+        # copy in build (other) files to build dir
         builder.append(
             RunTask(
                 [
                     "rsync",
                     "-r",
-                    f"{ipaths.pkg_sources_dir}/",
-                    f"{ipaths.build_dir}/",
+                    f"{ctx.ipaths.pkg_sources_dir}/",
+                    f"{build_dir}/",
                 ],
             )
         )
-        curr_spec = ipaths.spec
-        if custom_spec:
-            # dumb workaround
-            curr_spec = f'/var/{spec_digest}'
-            builder.append(
-                CopyTask([spec_file], curr_spec)
-            )
+        # copy in spec file to build dir
+        working_spec = build_dir / "samba.spec"
         builder.append(
             RunTask(
                 [
-                    "cp",
-                    curr_spec,
-                    str(working_spec),
-                ],
+                "cp",
+                ctr_spec_file,
+                ctx.ipaths.spec,
+                ]
             )
         )
+        # generate source tarball from git tree
+        working_tar = build_dir / f"samba-{rpm_version}.tar.gz"
         builder.append(
             RunTask(
                 [
@@ -394,38 +571,35 @@ def cmd_build_srpm(cli):
                 ],
             )
         )
-        builder.append(
-            RunTask(["ls", "-l", str(ipaths.build_dir)])
-        )
-
+        # generate SRPM in build dir
         builder.append(
             RunTask(
                 [
                     "rpmbuild",
                     "--define",
-                    f"_topdir {ipaths.build_dir}",
+                    f"_topdir {build_dir}",
                     "--define",
-                    f"_sourcedir {ipaths.build_dir}",
+                    f"_sourcedir {build_dir}",
                     "--define",
-                    f"_srcrpmdir {ipaths.build_dir}",
+                    f"_srcrpmdir {build_dir}",
                     "-bs",
                     str(working_spec),
                 ],
             )
         )
+    return
 
 
-def cmd_build_rpm(cli):
-    ipaths = ImagePaths()
-    rpm_version = "4.999"
-    srpm_pat = f"samba-{rpm_version}-*.src.rpm"
-    volumes = _common_volumes(cli, ipaths)
-    with BuildahBackend() as builder:
-        builder.base_image = cli.working_image
+@Builder.set(Steps.RPM)
+def cmd_build_rpm(ctx):
+    ctx.build.wants(Steps.SOURCE_RPM, ctx)
+    volumes = ctx.volumes()
+    srpm_pat = f"samba-*.src.rpm"
+    with BuildahBackend(base=ctx.cli.working_image, volumes=volumes) as builder:
+        build_dir = ctx.ipaths.build_dir
         res = builder.immediate(
             RunTask(
-                ["find", str(ipaths.build_dir), "-name", srpm_pat],
-                volumes=volumes,
+                ["find", str(build_dir), "-name", srpm_pat],
             )
         )
         found = res.stdout.decode("utf8").strip().splitlines()
@@ -437,21 +611,19 @@ def cmd_build_rpm(cli):
                 [
                     "rpmbuild",
                     "--define",
-                    f"_topdir {ipaths.build_dir}",
+                    f"_topdir {build_dir}",
                     "--rebuild",
-                    str(working_srpm),
+                    working_srpm,
                 ],
-                volumes=volumes,
             )
         )
 
 
-def cmd_configure(cli):
-    assert cli.source_dir
-    ipaths = ImagePaths()
-    volumes = _common_volumes(cli, ipaths)
-    with BuildahBackend() as builder:
-        builder.base_image = cli.working_image
+@Builder.set(Steps.CONFIGURE)
+def cmd_configure(ctx):
+    ctx.build.wants(Steps.CONTAINER, ctx)
+    volumes = ctx.volumes()
+    with BuildahBackend(base=ctx.cli.working_image, volumes=volumes) as builder:
         builder.append(
             RunTask(
                 [
@@ -460,50 +632,58 @@ def cmd_configure(cli):
                     "--enable-ceph-reclock",
                     "--with-cluster-support",
                 ],
-                volumes=volumes,
-                workingdir=str(ipaths.src_dir),
+                workingdir=ctx.ipaths.src_dir,
             )
         )
 
 
-def cmd_make(cli):
-    assert cli.source_dir
-    ipaths = ImagePaths()
-    volumes = _common_volumes(cli, ipaths)
-    with BuildahBackend() as builder:
-        builder.base_image = cli.working_image
+@Builder.set(Steps.MAKE)
+def cmd_make(ctx):
+    ctx.build.wants(Steps.CONTAINER, ctx)
+    volumes = ctx.volumes()
+    with BuildahBackend(base=ctx.cli.working_image, volumes=volumes) as builder:
         builder.append(
             RunTask(
                 ["make", "-j8"],
-                volumes=volumes,
-                workingdir=str(ipaths.src_dir),
+                workingdir=ctx.ipaths.src_dir,
             )
         )
 
 
-def cmd_any(cli):
-    assert cli.source_dir
-    ipaths = ImagePaths()
-    volumes = _common_volumes(cli, ipaths)
-    with BuildahBackend() as builder:
-        builder.base_image = cli.working_image
+@Builder.set(Steps.OTHER)
+def cmd_other(ctx):
+    if not ctx.cli.other:
+        msg = "no additional arguments found"
+        log.error(msg)
+        log.error("Specify additional arguments after '--' on the command line")
+        raise ValueError(msg)
+
+    ctx.build.wants(Steps.CONTAINER, ctx)
+    volumes = ctx.volumes()
+    with BuildahBackend(base=ctx.cli.working_image, volumes=volumes) as builder:
         builder.append(
             RunTask(
-                list(cli.other),
-                volumes=volumes,
-                workingdir=str(ipaths.src_dir),
+                list(ctx.cli.other),
+                workingdir=ctx.ipaths.src_dir,
             )
         )
 
 
-def parse_cli():
-    parser = argparse.ArgumentParser(
+def parse_cli(build_step_names):
+    parser = ArgumentParser(
         description="""
 Automate building samba packages using a container.
 
 It can be invoked using only command line options or using a YAML based
 configuration file. Use --help-yaml to see an example.
 """
+    )
+    parser.add_argument(
+        "--debug", action="store_true", help="Emit debug logging",
+    )
+    parser.add_argument(
+        "--cwd",
+        help="Change working directory before executing commands",
     )
     parser.add_argument(
         "--git-ref", default="master", help="Samba git ref to check out"
@@ -529,13 +709,13 @@ configuration file. Use --help-yaml to see an example.
     parser.add_argument(
         "--source-dir",
         "-s",
-        type=host_path,
+        type=_host_path,
         help="Path to samba git checkout",
     )
     parser.add_argument(
         "--artifacts-dir",
         "-a",
-        type=host_path,
+        type=_host_path,
         help="Path to a local directory where output will be saved",
     )
     parser.add_argument(
@@ -562,22 +742,36 @@ configuration file. Use --help-yaml to see an example.
         help="Name or tag for builder image",
     )
     parser.add_argument(
+        "--image-sources",
+        "-I",
+        action=ImageSourceAction,
+        help="Allowed sources for builder image"
+    )
+    parser.add_argument(
         "--rpm-spec-file",
         help="To RPM spec file",
     )
-    # TODO
-    # parser.add_argument(
-    #     "--example-yaml",
-    #     action="store_true",
-    #     help="Display example configuration yaml",
-    # )
     parser.add_argument("--config", "-c", help="Provide a configuration file")
-    parser.add_argument("other", nargs=argparse.REMAINDER)
-    cli = parser.parse_args()
+    parser.add_argument(
+        "--no-prereqs",
+        "-P",
+        action="store_true",
+        help="Do not execute any prerequisite steps. Only execute specified steps",
+    )
+    parser.add_argument(
+        "--execute",
+        "-e",
+        dest="steps",
+        action="append",
+        choices=build_step_names,
+        help="Execute the target build step(s)",
+    )
+    cli, other = parser.parse_my_args()
+    cli.other = other
     return cli
 
 
-def main():
+def _xxx_main():
     cli = parse_cli()
     tasks = cli.task or []
     if not tasks:
@@ -594,6 +788,34 @@ def main():
         cmd_build_rpm(cli)
     if "cmd" in tasks:
         cmd_any(cli)
+
+
+def _src_root():
+    return pathlib.Path(__file__).parent.absolute()
+
+
+def _setup_logging(cli):
+    level = logging.DEBUG if cli.debug else logging.INFO
+    logger = logging.getLogger()
+    logger.setLevel(level)
+    handler = logging.StreamHandler()
+    handler.setFormatter(
+        logging.Formatter("{asctime}: {levelname}: {message}", style="{")
+    )
+    handler.setLevel(level)
+    logger.addHandler(handler)
+
+
+def main():
+    builder = Builder()
+    cli = parse_cli(builder.available_steps())
+    _setup_logging(cli)
+
+    os.chdir(cli.cwd or _src_root())
+    ctx = Context(cli)
+    ctx.build = builder
+    for step in cli.steps or [Steps.BUILD]:
+        ctx.build.wants(step, ctx, top=True)
 
 
 if __name__ == "__main__":
