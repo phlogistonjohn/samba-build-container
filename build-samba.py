@@ -771,25 +771,6 @@ configuration file. Use --help-yaml to see an example.
     return cli
 
 
-def _xxx_main():
-    cli = parse_cli()
-    tasks = cli.task or []
-    if not tasks:
-        tasks = ["image", "srpm", "packages"]
-    if "image" in tasks:
-        cmd_build_image(cli)
-    if "configure" in tasks:
-        cmd_configure(cli)
-    if "make" in tasks:
-        cmd_make(cli)
-    if "srpm" in tasks:
-        cmd_build_srpm(cli)
-    if "packages" in tasks:
-        cmd_build_rpm(cli)
-    if "cmd" in tasks:
-        cmd_any(cli)
-
-
 def _src_root():
     return pathlib.Path(__file__).parent.absolute()
 
