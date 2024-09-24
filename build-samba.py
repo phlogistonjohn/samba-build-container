@@ -69,29 +69,6 @@ class ImageSource(enum.StrEnum):
     BUILD = "build"
 
 
-class ImageSourceAction(argparse.Action):
-    def __init__(self, **kwargs):
-        _choices = [e.value for e in ImageSource]
-        kwargs['choices'] = _choices
-        super().__init__(**kwargs)
-
-    def __call__(self, parser, namespace, values, option_string=None):
-        lst = getattr(namespace, self.dest, None) or []
-        lst.append(ImageSource(values))
-        setattr(namespace, self.dest, lst)
-
-
-class ArgumentParser(argparse.ArgumentParser):
-    def parse_my_args(self, args=None, namespace=None):
-        args = sys.argv[1:] if args is None else list(args)
-        if "--" in args:
-            idx = args.index("--")
-            my_args, rest = args[:idx], args[idx + 1 :]
-        else:
-            my_args, rest = args, []
-        return self.parse_args(my_args, namespace=namespace), rest
-
-
 class Builder:
     """Organize and manage the build steps."""
 
@@ -667,6 +644,29 @@ def cmd_other(ctx):
                 workingdir=ctx.ipaths.src_dir,
             )
         )
+
+
+class ImageSourceAction(argparse.Action):
+    def __init__(self, **kwargs):
+        _choices = [e.value for e in ImageSource]
+        kwargs['choices'] = _choices
+        super().__init__(**kwargs)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        lst = getattr(namespace, self.dest, None) or []
+        lst.append(ImageSource(values))
+        setattr(namespace, self.dest, lst)
+
+
+class ArgumentParser(argparse.ArgumentParser):
+    def parse_my_args(self, args=None, namespace=None):
+        args = sys.argv[1:] if args is None else list(args)
+        if "--" in args:
+            idx = args.index("--")
+            my_args, rest = args[:idx], args[idx + 1 :]
+        else:
+            my_args, rest = args, []
+        return self.parse_args(my_args, namespace=namespace), rest
 
 
 def parse_cli(build_step_names):
