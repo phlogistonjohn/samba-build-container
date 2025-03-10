@@ -210,6 +210,7 @@ class Steps(StrEnum):
     PACKAGES = "packages"
     INTERACTIVE = "interactive"
     SYNC = "sync"
+    SERVE_RPMS = "serve-rpms"
 
 
 class ImageSource(StrEnum):
@@ -846,6 +847,38 @@ def bc_sync(ctx):
                 if pattern in line:
                     line = line.replace(pattern, b"4.999")
                 fh.write(line)
+
+
+@Builder.set(Steps.SERVE_RPMS)
+def bc_serve_rpms(ctx):
+    """Serve RPMs"""
+    # Build is slow and failure is fast. Just skip the dependcy for now
+    # deal with it later if it becomes important.
+    # ctx.build.wants(Steps.RPM, ctx)
+
+    repo_lines = [
+        '[custom-samba]',
+        'name = custom-samba',
+        'gpgcheck = 0',
+        'baseurl = http://192.168.76.1:8889',
+    ]
+    ctr_commands = [
+        ['cd', f'{ctx.cli.homedir}/rpmbuild'],
+        ['createrepo_c', '.'],
+        ['echo', '-e', r'\n'.join(repo_lines), Shell('>custom-samba.repo')],
+        ['python3', '-m', 'http.server', '8889'],
+    ]
+    cmd = _container_cmd(
+        ctx,
+        [
+            "bash",
+            "-c",
+            _cmdchain(ctr_commands),
+        ],
+        ports=[8889],
+    )
+    with ctx.user_command():
+        _run(cmd, check=True, ctx=ctx)
 
 
 class ArgumentParser(argparse.ArgumentParser):
