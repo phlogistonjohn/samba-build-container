@@ -510,6 +510,7 @@ def _generate_samba_build_dockerfile(fh, ctx):
             "rsync",
             "gcc",
             "/usr/bin/rpmbuild",
+            "/usr/bin/createrepo_c",
             "dnf-command(builddep)",
         ]
     )
