@@ -161,13 +161,13 @@ def _container_cmd(ctx, args, *, workdir=None, interactive=False, ports=None):
         )
         cmd.append(f"-eCCACHE_DIR={ccdir}")
         cmd.append(f"-eCCACHE_BASEDIR={ctx.cli.homedir}")
-    for port_req in (ports or []):
+    for port_req in ports or []:
         if isinstance(port_req, str):
-            cmd.append(f'--publish={port_req}')
+            cmd.append(f"--publish={port_req}")
         if isinstance(port_req, int):
-            cmd.append(f'--publish={port_req}:{port_req}')
+            cmd.append(f"--publish={port_req}:{port_req}")
         else:
-            raise ValueError('invalid port type: {port_req!r}')
+            raise ValueError("invalid port type: {port_req!r}")
     for extra_arg in ctx.cli.extra or []:
         cmd.append(extra_arg)
     cmd.append(ctx.image_name)
@@ -857,16 +857,16 @@ def bc_serve_rpms(ctx):
     # ctx.build.wants(Steps.RPM, ctx)
 
     repo_lines = [
-        '[custom-samba]',
-        'name = custom-samba',
-        'gpgcheck = 0',
-        'baseurl = http://192.168.76.1:8889',
+        "[custom-samba]",
+        "name = custom-samba",
+        "gpgcheck = 0",
+        "baseurl = http://192.168.76.1:8889",
     ]
     ctr_commands = [
-        ['cd', f'{ctx.cli.homedir}/rpmbuild'],
-        ['createrepo_c', '.'],
-        ['echo', '-e', r'\n'.join(repo_lines), Shell('>custom-samba.repo')],
-        ['python3', '-m', 'http.server', '8889'],
+        ["cd", f"{ctx.cli.homedir}/rpmbuild"],
+        ["createrepo_c", "."],
+        ["echo", "-e", r"\n".join(repo_lines), Shell(">custom-samba.repo")],
+        ["python3", "-m", "http.server", "8889"],
     ]
     cmd = _container_cmd(
         ctx,
