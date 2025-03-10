@@ -123,7 +123,7 @@ def _run(cmd, *args, **kwargs):
     return subprocess.run(cmd, *args, **kwargs)
 
 
-def _container_cmd(ctx, args, *, workdir=None, interactive=False):
+def _container_cmd(ctx, args, *, workdir=None, interactive=False, ports=None):
     rm_container = not ctx.cli.keep_container
     cmd = [
         ctx.container_engine,
@@ -161,6 +161,13 @@ def _container_cmd(ctx, args, *, workdir=None, interactive=False):
         )
         cmd.append(f"-eCCACHE_DIR={ccdir}")
         cmd.append(f"-eCCACHE_BASEDIR={ctx.cli.homedir}")
+    for port_req in (ports or []):
+        if isinstance(port_req, str):
+            cmd.append(f'--publish={port_req}')
+        if isinstance(port_req, int):
+            cmd.append(f'--publish={port_req}:{port_req}')
+        else:
+            raise ValueError('invalid port type: {port_req!r}')
     for extra_arg in ctx.cli.extra or []:
         cmd.append(extra_arg)
     cmd.append(ctx.image_name)
