@@ -852,8 +852,8 @@ def bc_sync(ctx):
 @Builder.set(Steps.SERVE_RPMS)
 def bc_serve_rpms(ctx):
     """Serve RPMs"""
-    # Build is slow and failure is fast. Just skip the dependcy for now
-    # deal with it later if it becomes important.
+    # Build is slow and failure is fast. I always run this with -P. Just skip
+    # the dependcy for now deal with it later if it becomes important.
     # ctx.build.wants(Steps.RPM, ctx)
 
     repo_lines = [
