@@ -723,6 +723,24 @@ def bc_make_source_rpm(ctx):
         _run(cmd, check=True, ctx=ctx)
 
 
+
+def _find_srpms(ctx, build_dir):
+    srpm_glob = f"samba-{ctx.cache.rpm_version}*.src.rpm"
+    check_cmd = _container_cmd(
+        ctx,
+        ["find", build_dir, "-name", srpm_glob],
+    )
+    res = _run(check_cmd, check=False, capture_output=True)
+    paths = res.stdout.decode("utf8").splitlines()
+    if len(paths) > 1:
+        raise RuntimeError(
+            "too many matching source rpms"
+            f" (rename or remove unwanted files matching {srpm_glob} in the"
+            " build dir and try again)"
+        )
+    return paths
+
+
 @Builder.set(Steps.RPM)
 def bc_build_rpm(ctx):
     """Build RPMs from SRPM."""
@@ -734,24 +752,11 @@ def bc_build_rpm(ctx):
     build_dir = ctx.cli.homedir
     if ctx.cache.spec_sha256_sum:
         build_dir = f"{ctx.cli.homedir}/{_short(ctx.cache.spec_sha256_sum)}"
-    srpm_glob = f"samba-{ctx.cache.rpm_version}*.src.rpm"
-    check_cmd = _container_cmd(
-        ctx,
-        ["find", build_dir, "-name", srpm_glob],
-    )
-    res = _run(check_cmd, check=False, capture_output=True)
-    paths = res.stdout.decode("utf8").splitlines()
-
-    if len(paths) > 1:
-        raise RuntimeError(
-            "too many matching source rpms"
-            f" (rename or remove unwanted files matching {srpm_glob} in the"
-            " build dir and try again)"
-        )
+    paths = _find_srpms(ctx, build_dir)
     if not paths:
         # no matches. build a new srpm
         ctx.build.wants(Steps.SOURCE_RPM, ctx)
-        paths = glob.glob(srpm_glob)
+        paths = _find_srpms(ctx, build_dir)
         assert paths
 
     srpm_path = paths[0]
