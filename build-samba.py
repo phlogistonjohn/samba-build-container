@@ -7,6 +7,7 @@ import contextlib
 import enum
 import glob
 import hashlib
+import json
 import logging
 import os
 import pathlib
@@ -427,15 +428,19 @@ def build_container(ctx):
         ctx.container_engine,
         "build",
         "--pull=always",
+        "--net=host",
         "-t",
         ctx.image_name,
     ]
     cdir = pathlib.Path(ctx.cli.containerdir)
-    spec_checksums = [
-        f"{p.name}@{_sha256_digest(p)}"
+    _checksums = {
+        p.name: _sha256_digest(p)
         for p in (cdir / n for n in ("samba-master.spec",))
-    ]
-    cmd.append(f"--build-arg=SPECFILE_CHECKSUMS={' '.join(spec_checksums)}")
+    }
+    spec_checksums = ' '.join(f'{k}@{v}' for k, v in _checksums.items())
+    cmd.append(f"--build-arg=SPECFILE_CHECKSUMS={spec_checksums}")
+    spec_checksum = _checksums["samba-master.spec"]
+    cmd.append(f"--label=org.samba.container.spec.hash={spec_checksum}")
     if ctx.dnf_cache_dir and "docker" in ctx.container_engine:
         log.warning(
             "The --volume option is not supported by docker. Skipping dnf cache dir mounts"
@@ -496,12 +501,14 @@ def _generate_samba_build_dockerfile(fh, ctx):
                 "-y",
                 "epel-release",
                 "centos-release-gluster",
-                "centos-release-ceph-reef",
+                #"centos-release-ceph-reef",
             ]
         )
+        commands.append(["dnf", "copr", "enable", "-y", "phlogistonjohn/sambacc-extras-deps", "centos-stream+epel-next-9-x86_64"])
+        commands.append(['curl', '-L', '-o', '/etc/yum.repos.d/ceph.repo', "http://192.168.64.8:8016/pulp/content/ceph-fscrypt-x86_64/config.repo"])
         repo_opts = [
             f"--enablerepo={v}"
-            for v in ("crb", "epel", "centos-gluster11", "centos-ceph-reef")
+            for v in ("crb", "epel", "centos-gluster11") # "centos-ceph-reef")
         ]
     commands.append(
         ["dnf", "install", "-y"]
@@ -513,6 +520,7 @@ def _generate_samba_build_dockerfile(fh, ctx):
             "/usr/bin/rpmbuild",
             "/usr/bin/createrepo_c",
             "dnf-command(builddep)",
+            "libvarlink-devel",
         ]
     )
     commands.append(
@@ -524,15 +532,45 @@ def _generate_samba_build_dockerfile(fh, ctx):
     print(f"RUN {rpm_commands}", file=fh)
 
 
+class ImageState:
+    def __init__(self, name, present, checksum_match, labels):
+        self.name = name
+        self.present = present
+        self.checksum_match = checksum_match
+        self.labels = labels
+
+    @classmethod
+    def inspect(cls, ctx):
+        inspect_cmd = [
+            ctx.container_engine,
+            "image",
+            "inspect",
+            ctx.image_name,
+        ]
+        res = _run(inspect_cmd, check=False, capture_output=True)
+        if res.returncode != 0:
+            log.info("Container image %s not present", ctx.image_name)
+            return cls(ctx.image_name, False, False, {})
+        labels = {}
+        ctr_info = json.loads(res.stdout)[0]
+        if "Labels" in ctr_info:
+            labels.update(ctr_info["Labels"])
+        if "Labels" in ctr_info.get("ContainerConfig", {}):
+            labels.update(ctr_info["ContainerConfig"]["Labels"])
+        if "Labels" in ctr_info.get("Config", {}):
+            labels.update(ctr_info["Config"]["Labels"])
+        saved_hash = labels.get("org.samba.container.spec.hash", "")
+        cdir = pathlib.Path(ctx.cli.containerdir)
+        curr_hash = _sha256_digest(cdir / 'samba-master.spec')
+        log.info("Saved hash on image: %s", saved_hash)
+        log.info("Current spec file hash: %s", curr_hash)
+        checksum_match = (saved_hash == curr_hash)
+        return cls(ctx.image_name, True, checksum_match, labels)
+
+
 @Builder.set(Steps.CONTAINER)
 def get_container(ctx):
     """Build or fetch a container image that we will build in."""
-    inspect_cmd = [
-        ctx.container_engine,
-        "image",
-        "inspect",
-        ctx.image_name,
-    ]
     pull_cmd = [
         ctx.container_engine,
         "pull",
@@ -540,15 +578,17 @@ def get_container(ctx):
     ]
     allowed = ctx.cli.image_sources or ImageSource
     if ImageSource.CACHE in allowed:
-        res = _run(inspect_cmd, check=False, capture_output=True)
-        if res.returncode == 0:
-            log.info("Container image %s present", ctx.image_name)
+        istate = ImageState.inspect(ctx)
+        if istate.present and (istate.checksum_match or len(allowed) == 1):
+            log.info("Using cached image: %s", istate.name)
             return
-        log.info("Container image %s not present", ctx.image_name)
     if ImageSource.PULL in allowed:
         res = _run(pull_cmd, check=False, capture_output=True)
         if res.returncode == 0:
             log.info("Container image %s pulled successfully", ctx.image_name)
+        istate = ImageState.inspect(ctx)
+        if istate.present and (istate.checksum_match or len(allowed) == 1):
+            log.info("Using pulled image: %s", istate.name)
             return
     log.info("Container image %s needed", ctx.image_name)
     if ImageSource.BUILD in allowed:
@@ -571,10 +611,37 @@ def bc_configure(ctx):
                     ["cd", ctx.cli.homedir],
                     Shell("if [ -f .lock-wscript ]; then exit 0; fi"),
                     [
+                        # configure for devel with rhelish
                         "./configure",
                         "--enable-developer",
                         "--enable-ceph-reclock",
                         "--with-cluster-support",
+                        # paths!
+                        "--sbindir=/usr/sbin",
+                        "--sysconfdir=/etc/samba",
+                        # match prod containers more
+                        "--enable-fhs",
+                        "--with-piddir=/run",
+                        "--with-sockets-dir=/run/samba",
+                        "--with-modulesdir=/usr/lib64/samba",
+                        "--with-pammodulesdir=/usr/lib64/security",
+                        "--with-lockdir=/var/lib/samba/lock",
+                        "--with-statedir=/var/lib/samba",
+                        "--with-cachedir=/var/lib/samba",
+                        "--disable-rpath-install",
+                        "--with-pam",
+                        "--with-pie",
+                        "--with-relro",
+                        "--without-fam",
+                        "--with-system-mitkrb5",
+                        "--with-experimental-mit-ad-dc",
+                        "--enable-selftest",
+                        "--with-profiling-data",
+                        "--with-systemd",
+                        "--with-quotas",
+                        "--systemd-install-services",
+                        "--with-systemddir=/usr/lib/systemd/system",
+                        "--with-varlink",
                     ],
                 ]
             ),
