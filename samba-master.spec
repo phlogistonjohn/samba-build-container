@@ -36,9 +36,11 @@
 %ifarch aarch64 ppc64le s390x x86_64
 %bcond_without vfs_cephfs
 %bcond_without ceph_mutex
+%bcond_without varlink
 %else
 %bcond_with vfs_cephfs
 %bcond_with ceph_mutex
+%bcond_with varlink
 #endifarch
 %endif
 
@@ -51,7 +53,7 @@
 %endif
 
 %bcond_with vfs_glusterfs
-%ifarch aarch64 ppc64le s390x x86_64
+%ifarch ppc64le s390x x86_64
 %if (0%{?rhel} && 0%{?centos}) || 0%{?fedora}
 %bcond_without vfs_glusterfs
 %endif
@@ -71,7 +73,9 @@
 %bcond_with etcd_mutex
 %endif
 
-%define samba_requires_eq()  %(LC_ALL="C" echo '%*' | xargs -r rpm -q --qf 'Requires: %%{name} = %%{epoch}:%%{version}\\n' | sed -e 's/ (none):/ /' -e 's/ 0:/ /' | grep -v "is not")
+%bcond_without gettext
+
+%bcond_without prometheus_endpoint
 
 %global baserelease 1
 
@@ -114,7 +118,7 @@
 
 Name:           samba
 Version:        %{samba_version}
-Release:        %{samba_release}%{?dist}
+Release:        %{samba_release}%{?dist}%{?vendor_dist}
 
 %if 0%{?rhel}
 Epoch:          0
@@ -190,6 +194,9 @@ BuildRequires: docbook-style-xsl
 BuildRequires: e2fsprogs-devel
 BuildRequires: flex
 BuildRequires: gawk
+%if %{with gettext}
+BuildRequires: gettext
+%endif
 BuildRequires: gnupg2
 %if 0%{?centos} == 7
 BuildRequires: compat-gnutls37-devel
@@ -204,14 +211,15 @@ BuildRequires: libaio-devel
 BuildRequires: libarchive-devel
 BuildRequires: libattr-devel
 BuildRequires: libcap-devel
+%if %{with prometheus_endpoint}
+BuildRequires: libevent-devel
+%endif
 BuildRequires: libicu-devel
 BuildRequires: libcmocka-devel
 BuildRequires: libtirpc-devel
 BuildRequires: libuuid-devel
 BuildRequires: libxslt
-%if %{with dc} || %{with testsuite}
 BuildRequires: lmdb
-%endif
 %if %{with winexe}
 BuildRequires: mingw32-gcc
 BuildRequires: mingw64-gcc
@@ -504,11 +512,6 @@ Requires: libwbclient = %{samba_depver}
 %endif
 Requires: ldb-tools
 Requires: python3-setproctitle
-# Force using libldb version to be the same as build version
-# Otherwise LDB modules will not be loaded and samba-tool will fail
-# See bug 1507420
-%samba_requires_eq libldb
-
 Requires: python3-%{name} = %{samba_depver}
 Requires: python3-%{name}-dc = %{samba_depver}
 Requires: krb5-server >= %{required_mit_krb5}
@@ -1174,6 +1177,7 @@ export python_LDFLAGS="$(echo ${LDFLAGS} | sed -e 's/-Wl,-z,defs//g')"
         --with-lockdir=/var/lib/samba/lock \
         --with-statedir=/var/lib/samba \
         --with-cachedir=/var/lib/samba \
+        --pythonarchdir=%{python3_sitearch} \
         --disable-rpath-install \
         --with-shared-modules=%{_samba_modules} \
         --bundled-libraries=%{_samba_libraries} \
@@ -1206,8 +1210,17 @@ export python_LDFLAGS="$(echo ${LDFLAGS} | sed -e 's/-Wl,-z,defs//g')"
 %if %{with ceph_mutex}
         --enable-ceph-reclock \
 %endif
+%if %{with varlink}
+        --with-varlink \
+%endif
 %if %{with etcd_mutex}
         --enable-etcd-reclock \
+%endif
+%if %{without gettext}
+        --without-gettext \
+%endif
+%if %{with prometheus_endpoint}
+        --with-prometheus-exporter \
 %endif
         --with-profiling-data \
         --with-systemd \
@@ -1229,6 +1242,8 @@ popd
 
 %install
 %make_install
+%find_lang pam_winbind
+%find_lang net
 
 install -d -m 0755 %{buildroot}/usr/{sbin,bin}
 install -d -m 0755 %{buildroot}%{_libdir}/security
@@ -1724,6 +1739,9 @@ fi
 %{_bindir}/smbspool
 %{_bindir}/smbtar
 %{_bindir}/smbtree
+%if %{with prometheus_endpoint}
+%{_sbindir}/smb_prometheus_endpoint
+%endif
 %{_bindir}/wspsearch
 %dir %{_libexecdir}/samba
 %ghost %{_libexecdir}/samba/cups_backend_smb
@@ -1751,6 +1769,9 @@ fi
 %{_mandir}/man8/cifsdd.8.*
 %{_mandir}/man8/samba-regedit.8*
 %{_mandir}/man8/smbspool.8*
+%if %{with prometheus_endpoint}
+%{_mandir}/man8/smb_prometheus_endpoint.8*
+%endif
 
 %{_bindir}/tdbbackup
 %{_bindir}/tdbdump
@@ -1850,6 +1871,7 @@ fi
 %{_libdir}/samba/libsamba-net-private-samba.so
 %{_libdir}/samba/libsamba-policy-private-samba.so
 %{_libdir}/samba/libsamba-security-private-samba.so
+%{_libdir}/samba/libsamba-security-trusts-private-samba.so
 %{_libdir}/samba/libsamba-sockets-private-samba.so
 %{_libdir}/samba/libsamba3-util-private-samba.so
 %{_libdir}/samba/libsamdb-common-private-samba.so
@@ -1857,7 +1879,6 @@ fi
 %{_libdir}/samba/libsecrets3-private-samba.so
 %{_libdir}/samba/libserver-id-db-private-samba.so
 %{_libdir}/samba/libserver-role-private-samba.so
-%{_libdir}/samba/libsmb-transport-private-samba.so
 %{_libdir}/samba/libsmbclient-raw-private-samba.so
 %{_libdir}/samba/libsmbd-base-private-samba.so
 %{_libdir}/samba/libsmbd-shim-private-samba.so
@@ -1867,6 +1888,7 @@ fi
 %{_libdir}/samba/libsocket-blocking-private-samba.so
 %{_libdir}/samba/libtime-basic-private-samba.so
 %{_libdir}/samba/libtorture-private-samba.so
+%{_libdir}/samba/libutil-crypt-private-samba.so
 %{_libdir}/samba/libutil-reg-private-samba.so
 %{_libdir}/samba/libutil-setid-private-samba.so
 %{_libdir}/samba/libutil-tdb-private-samba.so
@@ -1890,9 +1912,7 @@ fi
 
 %{_libdir}/samba/ldb/asq.so
 %{_libdir}/samba/ldb/ldb.so
-%if %{with dc} || %{with testsuite}
 %{_libdir}/samba/ldb/mdb.so
-%endif
 %{_libdir}/samba/ldb/paged_searches.so
 %{_libdir}/samba/ldb/rdn_name.so
 %{_libdir}/samba/ldb/sample.so
@@ -1936,7 +1956,11 @@ fi
 %{_libdir}/samba/pdb/smbpasswd.so
 %{_libdir}/samba/pdb/tdbsam.so
 
+%if %{with gettext}
+%files common-tools -f net.lang
+%else
 %files common-tools
+%endif
 %{_bindir}/net
 %{_bindir}/pdbedit
 %{_bindir}/profiles
@@ -2014,6 +2038,7 @@ fi
 %{_libdir}/samba/ldb/subtree_delete.so
 %{_libdir}/samba/ldb/subtree_rename.so
 %{_libdir}/samba/ldb/tombstone_reanimate.so
+%{_libdir}/samba/ldb/trust_notify.so
 %{_libdir}/samba/ldb/unique_object_sids.so
 %{_libdir}/samba/ldb/update_keytab.so
 %{_libdir}/samba/ldb/vlv.so
@@ -2062,6 +2087,7 @@ fi
 %{_libdir}/samba/service/dns.so
 %{_libdir}/samba/service/dns_update.so
 %{_libdir}/samba/service/drepl.so
+%{_libdir}/samba/service/ft_scanner.so
 %{_libdir}/samba/service/kcc.so
 %{_libdir}/samba/service/kdc.so
 %{_libdir}/samba/service/ldap.so
@@ -2576,10 +2602,20 @@ fi
 %dir %{python3_sitearch}/samba/tests/ndr/__pycache__
 %{python3_sitearch}/samba/tests/ndr/__pycache__/*.*.pyc
 
+%dir %{python3_sitearch}/samba/tests/nss
+%{python3_sitearch}/samba/tests/nss/*.py
+%dir %{python3_sitearch}/samba/tests/nss/__pycache__
+%{python3_sitearch}/samba/tests/nss/__pycache__/*.*.pyc
+
 %dir %{python3_sitearch}/samba/tests/samba_tool
 %{python3_sitearch}/samba/tests/samba_tool/*.py
 %dir %{python3_sitearch}/samba/tests/samba_tool/__pycache__
 %{python3_sitearch}/samba/tests/samba_tool/__pycache__/*.*.pyc
+
+%dir %{python3_sitearch}/samba/tests/varlink
+%{python3_sitearch}/samba/tests/varlink/*.py
+%dir %{python3_sitearch}/samba/tests/varlink/__pycache__
+%{python3_sitearch}/samba/tests/varlink/__pycache__/*.*.pyc
 
 %{python3_sitearch}/samba/tests/krb5/__pycache__/*.*.pyc
 %{python3_sitearch}/samba/tests/krb5/*.py
@@ -2645,7 +2681,11 @@ fi
 %{_mandir}/man8/winbind_krb5_locator.8*
 
 ### WINBIND-MODULES
+%if %{with gettext}
+%files winbind-modules -f pam_winbind.lang
+%else
 %files winbind-modules
+%endif
 %{_libdir}/libnss_winbind.so*
 %{_libdir}/libnss_wins.so*
 %{_libdir}/security/pam_winbind.so
