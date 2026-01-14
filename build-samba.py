@@ -479,6 +479,7 @@ def _generate_samba_build_dockerfile(fh, ctx):
     build_dir = ctx.cli.homedir
     pkg_sources_dir = "/usr/local/src/samba"
     print(f"FROM {ctx.from_image}", file=fh)
+    print(f"ARG SPECFILE_CHECKSUMS=", file=fh)
     print(f"RUN mkdir -p -m 0777 {build_dir} {pkg_sources_dir}", file=fh)
     files = [
         "samba.pamd",
