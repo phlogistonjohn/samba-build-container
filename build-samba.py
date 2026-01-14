@@ -475,8 +475,25 @@ def _sha256_digest(path, bsize=4096):
     return "sha256:" + spec_digest
 
 
+def _get_build_deps(deps):
+    if not deps:
+        return [
+            BuildDepExpression(
+                "keybridge=copr:phlogistonjohn/sambacc-extras-deps"
+                ";centos-stream+epel-next-9-x86_64"
+            ),
+            BuildDepExpression(
+                "ceph=package:centos-release-ceph-squid",
+            ),
+        ]
+    return deps
+
+
 def _generate_samba_build_dockerfile(fh, ctx):
     build_dir = ctx.cli.homedir
+    build_deps = _get_build_deps(ctx.cli.build_deps)
+
+    ceph_package = ceph_repo = None
     pkg_sources_dir = "/usr/local/src/samba"
     print(f"FROM {ctx.from_image}", file=fh)
     print(f"ARG SPECFILE_CHECKSUMS=", file=fh)
@@ -502,15 +519,19 @@ def _generate_samba_build_dockerfile(fh, ctx):
                 "-y",
                 "epel-release",
                 "centos-release-gluster",
-                #"centos-release-ceph-reef",
             ]
         )
-        commands.append(["dnf", "copr", "enable", "-y", "phlogistonjohn/sambacc-extras-deps", "centos-stream+epel-next-9-x86_64"])
-        commands.append(['curl', '-L', '-o', '/etc/yum.repos.d/ceph.repo', "http://192.168.64.8:8016/pulp/content/ceph-fscrypt-x86_64/config.repo"])
-        repo_opts = [
-            f"--enablerepo={v}"
-            for v in ("crb", "epel", "centos-gluster11") # "centos-ceph-reef")
-        ]
+        use_repos = ["crb", "epel", "centos-gluster11"]
+        repo_opts = [f"--enablerepo={v}" for v in use_repos]
+
+    # extend build dependecies with custom objects
+    for bdep in build_deps:
+        if not bdep.match(distro):
+            continue
+        commands.append(bdep.spec.command())
+        if hasattr(bdep, 'repo_opts'):
+            repo_opts += bdep.spec.repo_opts()
+
     commands.append(
         ["dnf", "install", "-y"]
         + repo_opts
@@ -968,6 +989,132 @@ class ArgumentParser(argparse.ArgumentParser):
         return self.parse_args(my_args, namespace=namespace), rest
 
 
+class URLDepSpec:
+    def __init__(self, url):
+        self.url = url
+
+    def command(self):
+        if "#" in self.url:
+            _, fname = self.url.rsplit("#", 1)
+        else:
+            _, fname = self.url.rsplit("/", 1)
+        return ["curl", "-L", "-o", f"/etc/yum.repos.d/{fname}", self.url]
+
+
+class COPRDepSpec:
+    def __init__(self, spec):
+        if ";" in spec:
+            self.repo, self.chroot = spec.split(";", 1)
+        else:
+            self.repo = spec
+            self.chroot = None
+
+    def command(self):
+        cmd = [
+            "dnf",
+            "copr",
+            "enable",
+            "-y",
+            self.repo,
+        ]
+        if self.chroot:
+            cmd.append(self.chroot)
+        return cmd
+
+
+class PackageDepSpec:
+    def __init__(self, spec):
+        if "/" in spec:
+            self.package_name, self.repo_name = spec.split("/", 1)
+        else:
+            self.package_name = spec
+            self.repo_name = None
+
+    def command(self):
+        return ["dnf", "install", "-y", self.package_name]
+
+    def repo_opts(self):
+        return [f'--enablerepo={self.repo_name}']
+
+
+class ShamanDepSpec:
+    def __init__(self, spec):
+        self._raw = [p.split('=', 1) for p in  spec.split(',')]
+        kv = dict(self._raw)
+        self.ref = kv.get('ref', '')
+        self.sha1 = kv.get('sha1', '')
+
+    def _query_url(self):
+        project = "ceph"
+        distros = "centos/9/x86_64"
+        flavor = "default"
+        ref = self.ref or "main"
+        sha1 = self.sha1 or "latest"
+        return (
+            "https://shaman.ceph.com/api/search/?"
+            f"project={project}&distros={distros}"
+            f"&flavor={flavor}&ref={ref}&sha1={sha1}"
+        )
+
+    def command(self):
+        with urllib.request.urlopen(self._query_url()) as fh:
+            data = json.load(fh)
+        base_url = data[0].get("url")
+        release_rpm = f"{base_url}/noarch/ceph-release-1-0.el9.noarch.rpm"
+        return ["dnf", "install", "-y", release_rpm]
+
+
+class BuildDepExpression:
+    def __init__(self, value):
+        if not "=" in value:
+            raise argparse.ArgumentTypeError(
+                "invalid BuildDepExpression: no = after name"
+            )
+        ident, rhs = value.split("=", 1)
+        if "[" in ident and not ident[-1] == "]":
+            raise argparse.ArgumentTypeError(
+                "invalid BuildDepExpression: malformed selector"
+            )
+        elif "[" in ident:
+            self.name, rest = ident.split("[", 1)
+            self.selector = self._parse_sel(rest[:-1])
+        else:
+            self.name = ident
+            self.selector = None
+        self._parse_src(rhs)
+
+    def _parse_sel(self, sel):
+        # TODO
+        print("SEL", sel)
+
+    def _parse_src(self, src):
+        if ":" not in src:
+            raise argparse.ArgumentTypeError(
+                "invalid source in BuildDepExpression, missing colon"
+            )
+        scope, remain = src.split(":")
+        _exp = {
+            "package": (True, PackageDepSpec),
+            "http": (False, URLDepSpec),
+            "https:": (False, URLDepSpec),
+            "copr": (True, COPRDepSpec),
+            "shaman": (True, ShamanDepSpec),
+        }
+        if scope not in _exp:
+            raise argparse.ArgumentTypeError(f"unknown scope: {scope}")
+        remove_prefix, fn = _exp[scope]
+        self.spec = fn(remain if remove_prefix else src)
+
+    def __repr__(self):
+        vals = [f"name={self.name}"]
+        val = ", ".join(vals)
+        return f"<BuildDepExpression({val})>"
+
+    def match(self, distro_kind):
+        # TODO: actually filter
+        return True
+
+
 def parse_cli(build_step_names):
     parser = ArgumentParser(
         description=__doc__,
@@ -1115,6 +1262,13 @@ def parse_cli(build_step_names):
         "--help-build-steps",
         action="store_true",
         help="Print executable build steps and brief descriptions",
+    )
+    parser.add_argument(
+        "--build-dep",
+        type=BuildDepExpression,
+        dest="build_deps",
+        action="append",
+        help="Describe a source of build dependencies",
     )
     cli, rest = parser.parse_my_args()
     if cli.help_build_steps:
