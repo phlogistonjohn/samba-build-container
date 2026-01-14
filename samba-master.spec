@@ -26,6 +26,12 @@
 # Build a libwbclient package by default
 %bcond_without libwbclient
 
+%if 0%{?rhel} > 10 || 0%{?fedora} > 41
+%bcond_with libcmocka
+%else
+%bcond_without libcmocka
+%endif
+
 %if 0%{?rhel} >= 8 || 0%{?fedora}
 %bcond_without winexe
 %else
@@ -52,11 +58,17 @@
 #endifarch
 %endif
 
+# Do not build vfs_glusterfs on EL10
+%if 0%{?rhel} > 9
 %bcond_with vfs_glusterfs
-%ifarch ppc64le s390x x86_64
-%if (0%{?rhel} && 0%{?centos}) || 0%{?fedora}
+%else
+%ifarch aarch64 ppc64le s390x x86_64
 %bcond_without vfs_glusterfs
+%else
+%bcond_with vfs_glusterfs
+#endifarch
 %endif
+#endif rhel
 %endif
 
 # Build the ctdb-pcp-pmda package by default on Fedora
@@ -215,7 +227,9 @@ BuildRequires: libcap-devel
 BuildRequires: libevent-devel
 %endif
 BuildRequires: libicu-devel
+%if %{without libcmocka}
 BuildRequires: libcmocka-devel
+%endif
 BuildRequires: libtirpc-devel
 BuildRequires: libuuid-devel
 BuildRequires: libxslt
@@ -281,6 +295,10 @@ BuildRequires: librados-devel
 
 %if %{with etcd_mutex}
 BuildRequires: python3-etcd
+%endif
+
+%if %{with varlink}
+BuildRequires: libvarlink-devel
 %endif
 
 %if %{with dc} || %{with testsuite}
@@ -1198,6 +1216,9 @@ export python_LDFLAGS="$(echo ${LDFLAGS} | sed -e 's/-Wl,-z,defs//g')"
 %if %{without vfs_glusterfs}
         --disable-glusterfs \
 %endif
+%if %{without vfs_cephfs}
+        --disable-cephfs \
+%endif
 %if %{with clustering}
         --with-cluster-support \
 %endif
@@ -1210,9 +1231,6 @@ export python_LDFLAGS="$(echo ${LDFLAGS} | sed -e 's/-Wl,-z,defs//g')"
 %if %{with ceph_mutex}
         --enable-ceph-reclock \
 %endif
-%if %{with varlink}
-        --with-varlink \
-%endif
 %if %{with etcd_mutex}
         --enable-etcd-reclock \
 %endif
@@ -1221,6 +1239,9 @@ export python_LDFLAGS="$(echo ${LDFLAGS} | sed -e 's/-Wl,-z,defs//g')"
 %endif
 %if %{with prometheus_endpoint}
         --with-prometheus-exporter \
+%endif
+%if %{with varlink}
+        --with-varlink \
 %endif
         --with-profiling-data \
         --with-systemd \
@@ -1702,16 +1723,6 @@ fi
 %{_mandir}/man8/vfs_xattr_tdb.8*
 %{_mandir}/man8/vfs_widelinks.8*
 
-%if %{without vfs_glusterfs}
-%exclude %{_mandir}/man8/vfs_glusterfs.8*
-%endif
-
-%if %{without vfs_cephfs}
-%exclude %{_mandir}/man8/vfs_ceph.8*
-%exclude %{_mandir}/man8/vfs_ceph_new.8*
-%exclude %{_mandir}/man8/vfs_ceph_snapshots.8*
-%endif
-
 %attr(775,root,printadmin) %dir /var/lib/samba/drivers
 
 ### CLIENT
@@ -1857,10 +1868,13 @@ fi
 %{_libdir}/samba/libndr-samba4-private-samba.so
 %{_libdir}/samba/libnet-keytab-private-samba.so
 %{_libdir}/samba/libnetif-private-samba.so
+%{_libdir}/samba/libngtcp2-private-samba.so
+%{_libdir}/samba/libngtcp2-crypto-gnutls-private-samba.so
 %{_libdir}/samba/libnpa-tstream-private-samba.so
 %{_libdir}/samba/libposix-eadb-private-samba.so
 %{_libdir}/samba/libprinter-driver-private-samba.so
 %{_libdir}/samba/libprinting-migrate-private-samba.so
+%{_libdir}/samba/libquic-private-samba.so
 %{_libdir}/samba/libreplace-private-samba.so
 %{_libdir}/samba/libregistry-private-samba.so
 %{_libdir}/samba/libsamba-cluster-support-private-samba.so
@@ -2648,6 +2662,9 @@ fi
 %{_libdir}/samba/libdlz-bind9-for-torture-private-samba.so
 %else
 %{_libdir}/samba/libdsdb-module-private-samba.so
+%endif
+%if %{with libcmocka}
+%{_libdir}/samba/libcmocka-private-samba.so
 %endif
 
 ### WINBIND
