@@ -2228,6 +2228,7 @@ fi
 %{_includedir}/samba-4.0/util/idtree_random.h
 %{_includedir}/samba-4.0/util/signal.h
 %{_includedir}/samba-4.0/util/substitute.h
+%{_includedir}/samba-4.0/util/talloc_keep_secret.h
 %{_includedir}/samba-4.0/util/time.h
 %{_includedir}/samba-4.0/util/tfork.h
 %{_includedir}/samba-4.0/util_ldb.h
