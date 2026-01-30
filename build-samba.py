@@ -505,6 +505,8 @@ def _generate_samba_build_dockerfile(fh, ctx):
         "pam_winbind.conf",
         "samba.logrotate",
         "smb.conf.vendor",
+        "samba-systemd-sysusers.conf",
+        "samba-winbind-systemd-sysusers.conf",
         "samba-master.spec",
     ]
     print(f'COPY {" ".join(files)} {pkg_sources_dir}', file=fh)

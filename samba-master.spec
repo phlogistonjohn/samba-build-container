@@ -152,10 +152,11 @@ Source11:       smb.conf.vendor
 Source12:       smb.conf.example
 Source13:       pam_winbind.conf
 Source14:       samba.pamd
+Source15:       samba-systemd-sysusers.conf
+Source16:       samba-winbind-systemd-sysusers.conf
 
 Source201:      README.downgrade
 
-Requires(pre): /usr/sbin/groupadd
 Requires(post): systemd
 Requires(preun): systemd
 Requires(postun): systemd
@@ -1324,6 +1325,10 @@ echo "d /run/samba  755 root root" > %{buildroot}%{_tmpfilesdir}/samba.conf
 echo "d /run/ctdb 755 root root" > %{buildroot}%{_tmpfilesdir}/ctdb.conf
 %endif
 
+install -d -m 0755 %{buildroot}%{_sysusersdir}
+install -m 0644 %{SOURCE15} %{buildroot}%{_sysusersdir}/samba.conf
+install -m 0644 %{SOURCE16} %{buildroot}%{_sysusersdir}/samba-winbind.conf
+
 install -d -m 0755 %{buildroot}%{_sysconfdir}/sysconfig
 install -m 0644 packaging/systemd/samba.sysconfig %{buildroot}%{_sysconfdir}/sysconfig/samba
 %if %{with clustering}
@@ -1441,7 +1446,7 @@ TDB_NO_FSYNC=1 make %{?_smp_mflags} test FAIL_IMMEDIATELY=1
 %systemd_postun_with_restart nmb.service
 
 %pre common
-getent group printadmin >/dev/null || groupadd -r printadmin || :
+%sysusers_create_compat %{SOURCE15}
 
 %post common
 %{?ldconfig}
@@ -1550,7 +1555,7 @@ fi
 %ldconfig_scriptlets test
 
 %pre winbind
-/usr/sbin/groupadd -g 88 wbpriv >/dev/null 2>&1 || :
+%sysusers_create_compat %{SOURCE16}
 
 %post winbind
 %systemd_post winbind.service
@@ -1614,6 +1619,7 @@ fi
 %{_libdir}/samba/vfs/acl_xattr.so
 %{_libdir}/samba/vfs/aio_fork.so
 %{_libdir}/samba/vfs/aio_pthread.so
+%{_libdir}/samba/vfs/aio_ratelimit.so
 %{_libdir}/samba/vfs/audit.so
 %{_libdir}/samba/vfs/btrfs.so
 %{_libdir}/samba/vfs/cap.so
@@ -1683,6 +1689,7 @@ fi
 %{_mandir}/man8/vfs_acl_xattr.8*
 %{_mandir}/man8/vfs_aio_fork.8*
 %{_mandir}/man8/vfs_aio_pthread.8*
+%{_mandir}/man8/vfs_aio_ratelimit.8*
 %{_mandir}/man8/vfs_audit.8*
 %{_mandir}/man8/vfs_btrfs.8*
 %{_mandir}/man8/vfs_cap.8*
@@ -1940,6 +1947,7 @@ fi
 ### COMMON
 %files common
 %{_tmpfilesdir}/samba.conf
+%{_sysusersdir}/samba.conf
 %dir %{_sysconfdir}/logrotate.d/
 %config(noreplace) %{_sysconfdir}/logrotate.d/samba
 %attr(0700,root,root) %dir /var/log/samba
@@ -2675,6 +2683,7 @@ fi
 %{_libdir}/samba/libnss-info-private-samba.so
 %{_libdir}/samba/libidmap-private-samba.so
 %{_sbindir}/winbindd
+%{_sysusersdir}/samba-winbind.conf
 %attr(750,root,wbpriv) %dir /var/lib/samba/winbindd_privileged
 %{_unitdir}/winbind.service
 %{_prefix}/lib/NetworkManager
